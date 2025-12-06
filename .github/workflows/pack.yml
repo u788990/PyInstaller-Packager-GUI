@@ -48,5 +48,5 @@ jobs:
       - name: 上传结果
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.output_name }}-${{ inputs.mode }}
+          name: $$ {{ inputs.output_name }}- $${{ inputs.mode }}
           path: dist/
