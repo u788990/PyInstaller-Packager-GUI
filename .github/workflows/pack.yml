@@ -14,7 +14,9 @@ on:
       mode:
         description: '打包模式'
         type: choice
-        options: [onefile, onedir]
+        options:
+          - onefile
+          - onedir
         default: onefile
       noconsole:
         description: '隐藏黑窗'
@@ -26,27 +28,24 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
+      
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
+      
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
+      
       - name: 云打包
+        shell: cmd
         run: |
-          python main.py --cloud ^
-            --source "${{ inputs.source_file }}" ^
-            --name "${{ inputs.output_name }}" ^
-            --mode "${{ inputs.mode }}" ^
-            ${{ inputs.noconsole && '--noconsole' || '' }}
-
+          python main.py --cloud --source "${{ inputs.source_file }}" --name "${{ inputs.output_name }}" --mode "${{ inputs.mode }}" ${{ inputs.noconsole == true && '--noconsole' || '' }}
+      
       - name: 上传结果
         uses: actions/upload-artifact@v4
         with:
-          name: $$ {{ inputs.output_name }}- $${{ inputs.mode }}
+          name: ${{ inputs.output_name }}-${{ inputs.mode }}
           path: dist/
