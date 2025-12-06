@@ -11,13 +11,21 @@ numpy>=1.20
 imageio>=2.9
 imageio-ffmpeg>=0.4
 
-# 背景移除 (rembg) - CPU版本，GitHub Actions无GPU
+# 背景移除 (rembg) - CPU版本
 rembg>=2.0
 onnxruntime>=1.10
 
 # PyQt5 GUI
 PyQt5>=5.15
 
-# 其他可能需要的
+# 其他
 scipy>=1.7
 scikit-image>=0.18
+
+# ========== 修复 jaraco 模块缺失 ==========
+jaraco.text
+jaraco.functools
+jaraco.context
+jaraco.classes
+importlib_resources
+importlib_metadata
