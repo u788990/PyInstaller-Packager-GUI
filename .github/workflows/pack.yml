@@ -10,7 +10,7 @@ on:
       output_name:
         description: '输出的EXE名字'
         required: true
-        default: 我的游戏
+        default: MyGame  # 默认英文
       mode:
         description: '打包模式'
         type: choice
@@ -37,20 +37,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 云打包（完整流程：分析+安装+打包）
+      - name: 云打包
         run: |
-          # 先自动"分析"依赖（模拟GUI步骤）
-          python -c "
-          import sys
-          sys.argv = ['main.py', '--cloud', '--source', '${{ inputs.source_file }}', '--name', '${{ inputs.output_name }}', '--mode', '${{ inputs.mode }}']
-          from main import main
-          main()
-          "
-          # 然后直接打包（用你的工具逻辑）
           python main.py --cloud --source "${{ inputs.source_file }}" --name "${{ inputs.output_name }}" --mode "${{ inputs.mode }}" ${{ inputs.noconsole && '--noconsole' || '' }}
 
       - name: 上传结果
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.output_name }}-${{ inputs.mode }}
+          name: artifact-${{ inputs.mode }}  # 全英文，避免下载bug
           path: dist/
