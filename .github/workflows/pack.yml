@@ -1,7 +1,71 @@
-- name: 云打包
-  run: |
-    # 设置 UTF-8 编码
-    chcp 65001
-    $env:PYTHONIOENCODING = 'utf-8'
-    python main.py --cloud --source "${{ inputs.source_file }}" --name "${{ inputs.output_name }}" --mode "${{ inputs.mode }}" ${{ inputs.noconsole && '--noconsole' || '' }}
-  shell: pwsh
+name: 云打包EXE（永久免费）
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_file:
+        description: '要打包的主Python文件路径（如 game/main.py）'
+        required: true
+        default: main.py
+      output_name:
+        description: '输出的EXE名字'
+        required: true
+        default: MyGame
+      mode:
+        description: '打包模式'
+        type: choice
+        options: [onefile, onedir]
+        default: onefile
+      noconsole:
+        description: '隐藏黑窗'
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: 1
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: 安装依赖
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: 云打包
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: 1
+        run: |
+          # Set console to UTF-8
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          [Console]::InputEncoding = [System.Text.Encoding]::UTF8
+          $env:PYTHONIOENCODING = 'utf-8'
+          $env:PYTHONUTF8 = '1'
+          
+          # Build noconsole argument
+          $noconsoleArg = ""
+          if ("${{ inputs.noconsole }}" -eq "true") {
+            $noconsoleArg = "--noconsole"
+          }
+          
+          # Run packaging
+          python main.py --cloud --source "${{ inputs.source_file }}" --name "${{ inputs.output_name }}" --mode "${{ inputs.mode }}" $noconsoleArg
+      
+      - name: 上传结果
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-${{ inputs.mode }}
+          path: dist/
