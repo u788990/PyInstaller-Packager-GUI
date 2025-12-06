@@ -8,7 +8,7 @@ on:
         required: true
         default: main.py
       output_name:
-        description: '输出的EXE名字'
+        description: '输出的EXE名字（仅英文）'
         required: true
         default: MyGame
       mode:
@@ -28,20 +28,113 @@ jobs:
     env:
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: 1
+      PIP_DISABLE_PIP_VERSION_CHECK: 1
     
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout代码
+        uses: actions/checkout@v4
       
-      - name: 设置 Python
+      - name: 设置Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
       
-      - name: 安装依赖
+      - name: 安装基础依赖
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          Write-Host "========================================" -ForegroundColor Cyan
+          Write-Host "Installing base dependencies..." -ForegroundColor Cyan
+          Write-Host "========================================" -ForegroundColor Cyan
+          python -m pip install --upgrade pip wheel setuptools
+          pip install PyInstaller>=6.0 Pillow>=9.0
+      
+      - name: 安装项目依赖
+        shell: pwsh
+        run: |
+          Write-Host "========================================" -ForegroundColor Cyan
+          Write-Host "Installing project dependencies..." -ForegroundColor Cyan
+          Write-Host "========================================" -ForegroundColor Cyan
+          
+          # Install from requirements.txt if exists
+          if (Test-Path "requirements.txt") {
+            Write-Host "Found requirements.txt, installing..." -ForegroundColor Green
+            pip install -r requirements.txt
+          }
+          
+          # Auto-detect and install dependencies from source file
+          $sourceFile = "${{ inputs.source_file }}"
+          if (Test-Path $sourceFile) {
+            Write-Host "Analyzing $sourceFile for dependencies..." -ForegroundColor Green
+            
+            # Read source file and extract imports
+            $content = Get-Content $sourceFile -Raw -ErrorAction SilentlyContinue
+            
+            # Common package mappings
+            $packageMap = @{
+              'cv2' = 'opencv-python'
+              'PIL' = 'Pillow'
+              'skimage' = 'scikit-image'
+              'sklearn' = 'scikit-learn'
+              'yaml' = 'PyYAML'
+            }
+            
+            # Packages to install if detected
+            $packagesToInstall = @()
+            
+            if ($content -match 'import cv2|from cv2') {
+              $packagesToInstall += 'opencv-python'
+              Write-Host "  -> Detected cv2 (OpenCV)" -ForegroundColor Yellow
+            }
+            if ($content -match 'import numpy|from numpy') {
+              $packagesToInstall += 'numpy'
+              Write-Host "  -> Detected numpy" -ForegroundColor Yellow
+            }
+            if ($content -match 'import PyQt5|from PyQt5') {
+              $packagesToInstall += 'PyQt5'
+              Write-Host "  -> Detected PyQt5" -ForegroundColor Yellow
+            }
+            if ($content -match 'import imageio|from imageio') {
+              $packagesToInstall += 'imageio'
+              $packagesToInstall += 'imageio-ffmpeg'
+              Write-Host "  -> Detected imageio" -ForegroundColor Yellow
+            }
+            if ($content -match 'import rembg|from rembg') {
+              $packagesToInstall += 'rembg'
+              $packagesToInstall += 'onnxruntime'
+              Write-Host "  -> Detected rembg" -ForegroundColor Yellow
+            }
+            if ($content -match 'import scipy|from scipy') {
+              $packagesToInstall += 'scipy'
+              Write-Host "  -> Detected scipy" -ForegroundColor Yellow
+            }
+            if ($content -match 'import skimage|from skimage') {
+              $packagesToInstall += 'scikit-image'
+              Write-Host "  -> Detected scikit-image" -ForegroundColor Yellow
+            }
+            if ($content -match 'import pygame|from pygame') {
+              $packagesToInstall += 'pygame'
+              Write-Host "  -> Detected pygame" -ForegroundColor Yellow
+            }
+            if ($content -match 'import requests|from requests') {
+              $packagesToInstall += 'requests'
+              Write-Host "  -> Detected requests" -ForegroundColor Yellow
+            }
+            
+            # Install detected packages
+            if ($packagesToInstall.Count -gt 0) {
+              $uniquePackages = $packagesToInstall | Select-Object -Unique
+              Write-Host "Installing detected packages: $($uniquePackages -join ', ')" -ForegroundColor Green
+              foreach ($pkg in $uniquePackages) {
+                Write-Host "  Installing $pkg..." -ForegroundColor Cyan
+                pip install $pkg --quiet
+              }
+            }
+          }
+          
+          Write-Host "========================================" -ForegroundColor Cyan
+          Write-Host "Installed packages:" -ForegroundColor Cyan
+          pip list --format=columns
       
       - name: 云打包
         shell: pwsh
@@ -49,23 +142,43 @@ jobs:
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: 1
         run: |
-          # Set console to UTF-8
+          # Set console encoding
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           [Console]::InputEncoding = [System.Text.Encoding]::UTF8
-          $env:PYTHONIOENCODING = 'utf-8'
-          $env:PYTHONUTF8 = '1'
           
-          # Build noconsole argument
+          # Build arguments
           $noconsoleArg = ""
           if ("${{ inputs.noconsole }}" -eq "true") {
             $noconsoleArg = "--noconsole"
           }
           
-          # Run packaging
+          Write-Host "========================================" -ForegroundColor Cyan
+          Write-Host "Starting cloud packaging..." -ForegroundColor Cyan
+          Write-Host "Source: ${{ inputs.source_file }}" -ForegroundColor White
+          Write-Host "Output: ${{ inputs.output_name }}" -ForegroundColor White
+          Write-Host "Mode: ${{ inputs.mode }}" -ForegroundColor White
+          Write-Host "========================================" -ForegroundColor Cyan
+          
+          # Run packager
           python main.py --cloud --source "${{ inputs.source_file }}" --name "${{ inputs.output_name }}" --mode "${{ inputs.mode }}" $noconsoleArg
+      
+      - name: 检查输出
+        shell: pwsh
+        run: |
+          Write-Host "========================================" -ForegroundColor Cyan
+          Write-Host "Checking output..." -ForegroundColor Cyan
+          
+          if (Test-Path "dist") {
+            Write-Host "Contents of dist/:" -ForegroundColor Green
+            Get-ChildItem -Path "dist" -Recurse | Format-Table Name, Length, LastWriteTime
+          } else {
+            Write-Host "ERROR: dist folder not found!" -ForegroundColor Red
+            exit 1
+          }
       
       - name: 上传结果
         uses: actions/upload-artifact@v4
         with:
-          name: artifact-${{ inputs.mode }}
+          name: ${{ inputs.output_name }}-${{ inputs.mode }}
           path: dist/
+          if-no-files-found: error
