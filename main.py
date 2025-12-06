@@ -1754,45 +1754,25 @@ def main():
         traceback.print_exc()
         input("按Enter键退出...")
 
-def cloud_pack(self):
-    import argparse, subprocess, sys
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cloud", action="store_true")
-    parser.add_argument("--source")
-    parser.add_argument("--name", default="Game")
-    parser.add_argument("--mode", choices=["onefile","onedir"], default="onefile")
-    parser.add_argument("--noconsole", action="store_true")
-    args = parser.parse_args()
-
-    if args.cloud:
-        cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean"]
-        cmd += ["--onefile"] if args.mode == "onefile" else ["--onedir"]
-        if args.noconsole: cmd.append("--noconsole")
-        cmd += ["--name", args.name, args.source]
-        print("开始云打包:", " ".join(cmd))
-        subprocess.run(cmd, check=True)
-        print("打包完成！结果在 dist 文件夹")
-        sys.exit(0)
 if __name__ == "__main__":
-    # ===== 下面这 30 行就是云打包支持，复制完就永久解放电脑！=====
+    # ==================== 云打包支持（GitHub Actions 永久免费）====================
     import argparse
     import subprocess
     import sys
-    from pathlib import Path
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cloud", action="store_true", help="云打包模式（GitHub Actions用）")
-    parser.add_argument("--source", default="main.py")
-    parser.add_argument("--name", default="我的游戏")
+    parser.add_argument("--cloud", action="store_true", help="云打包模式")
+    parser.add_argument("--source", default="main.py", help="要打包的主Python文件")
+    parser.add_argument("--name", default="我的游戏", help="输出的EXE名字")
     parser.add_argument("--mode", choices=["onefile", "onedir"], default="onefile")
-    parser.add_argument("--noconsole", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--noconsole", action="store_true", help="隐藏控制台黑窗")
+    args, unknown = parser.parse_known_args()   # 防止和GUI参数冲突
 
     if args.cloud:
         cmd = [
             sys.executable, "-m", "PyInstaller",
             "--noconfirm", "--clean",
-            "--name", args.name
+            "--name", args.name,
         ]
         if args.mode == "onefile":
             cmd.append("--onefile")
@@ -1802,9 +1782,9 @@ if __name__ == "__main__":
 
         print("开始云打包:", " ".join(cmd))
         subprocess.run(cmd, check=True)
-        print("打包完成！结果在 dist 文件夹")
+        print("云打包完成！输出在 dist 文件夹")
         sys.exit(0)
-    # ============================================================
+    # =====================================================================
 
-    # 正常本地启动GUI
+    # 正常启动你的漂亮GUI
     main()
