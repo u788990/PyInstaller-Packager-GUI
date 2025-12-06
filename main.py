@@ -1755,13 +1755,15 @@ def main():
         input("按Enter键退出...")
 
 if __name__ == "__main__":
-    # ==================== GitHub Actions 云打包专用（调用你自己的高级打包函数）====================
+    # ==================== GitHub Actions 云打包专用（完全静默版）====================
     import argparse
     import sys
     import os
+    from main import GamePackager   # 只导入类，不创建实例
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--cloud", action="store_true")
+    parser.add_argument("--source", dest="dummy", action="store_true")  # 兼容未知参数
     parser.add_argument("--source", default="main.py")
     parser.add_argument("--name", default="MyGame")
     parser.add_argument("--mode", choices=["onefile", "onedir"], default="onefile")
@@ -1769,22 +1771,27 @@ if __name__ == "__main__":
     args, unknown = parser.parse_known_args()
 
     if args.cloud:
-        # 直接实例化你的工具类，然后强制走完整打包流程（和你本地点“打包”按钮一模一样）
-        os.environ["CLOUD_MODE"] = "1"        # 防止弹 GUI
-        from main import GamePackager
-        
-        app = GamePackager()
-        # 强制设置参数（模拟你手动填的）
-        app.source_entry.delete(0, tk.END)
-        app.source_entry.insert(0, args.source)
-        app.output_entry.delete(0, tk.END)
-        app.output_entry.insert(0, args.name)
-        app.pack_mode_var.set(args.mode)
-        app.no_console_var.set(args.noconsole)
-        
-        # 直接调用你自己的高级打包函数（它会自动处理 PyQt5、图标、排除模块、隐藏导入……）
-        app.pack_game(args.source)
-        print("[Cloud Pack] 打包完成！输出在 dist 文件夹")
+        print("[Cloud] 开始云打包（静默模式，完全不弹窗）")
+        os.environ["CLOUD_MODE"] = "1"      # 标记云环境
+        os.environ["DISPLAY"] = ""         # 防止 tkinter 找显示器
+
+        # 只实例化核心，不创建任何 GUI 控件
+        packager = GamePackager()
+        packager.root = None                # 强制让所有 tk 调用失效
+        packager.message_queue = type('obj', (object,), {'put': lambda *x: None})()
+
+        # 强制设置参数
+        packager.source_entry = type('obj', (object,), {'get': lambda: args.source})()
+        packager.output_entry = type('obj', (object,), {'get': lambda: args.name})()
+        packager.pack_mode_var = type('obj', (object,), {'get': lambda: args.mode})()
+        packager.no_console_var = type('obj', (object,), {'get': lambda: args.noconsole})()
+        packager.fast_mode_var = type('obj', (object,), {'get': lambda: True})()
+        packager.safe_mode_var = type('obj', (object,), {'get': lambda: True})()
+
+        # 直接调用你最牛逼的 pack_game 函数（它会自动分析依赖、安装缺失、加隐藏导入、处理图标…）
+        packager.pack_game(args.source)
+
+        print("[Cloud] 云打包完成！输出在 dist 文件夹")
         sys.exit(0)
 
     # 本地才走这里，正常弹出 GUI
