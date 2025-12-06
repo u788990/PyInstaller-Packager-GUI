@@ -1,35 +1,31 @@
-name: 云打包 EXE
+name: 云打包EXE（永久免费）
 
 on:
   workflow_dispatch:
     inputs:
-      python_script:
-        description: '上传你的主程序 .py 文件（必须包含完整路径，例如 game/main.py）'
+      source_file:
+        description: '要打包的主Python文件路径（如 game/main.py）'
         required: true
-        type: string
+        default: main.py
       output_name:
-        description: '输出的EXE文件名（不带.exe）'
-        default: 'MyGame'
-        required: false
-      pack_mode:
+        description: '输出的EXE名字'
+        required: true
+        default: 我的游戏
+      mode:
         description: '打包模式'
         type: choice
         options: [onefile, onedir]
-        default: 'onefile'
+        default: onefile
       noconsole:
-        description: '隐藏控制台窗口'
+        description: '隐藏黑窗'
         type: boolean
         default: true
-      icon:
-        description: '上传图标文件（.ico 或 .png，可留空）'
-        required: false
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: Checkout 打包工具
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: 设置 Python
         uses: actions/setup-python@v5
@@ -41,30 +37,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 下载用户上传的Python脚本
-        uses: actions/download-artifact@v3
-        with:
-          name: user-script
-          path: .
-
-      - name: 下载用户图标（如果有）
-        if: ${{ inputs.icon }}
-        uses: actions/download-artifact@v3
-        with:
-          name: user-icon
-          path: .
-
-      - name: 运行云打包（自动调用你的GUI工具逻辑）
+      - name: 云打包
         run: |
-          python main.py --cloud \
-            --source "${{ inputs.python_script }}" \
-            --name "${{ inputs.output_name }}" \
-            --mode "${{ inputs.pack_mode }}" \
-            ${{ inputs.noconsole == 'true' && '--noconsole' || '' }} \
-            ${{ inputs.icon && format('--icon {0}', inputs.icon) || '' }}
+          python main.py --cloud ^
+            --source "${{ inputs.source_file }}" ^
+            --name "${{ inputs.output_name }}" ^
+            --mode "${{ inputs.mode }}" ^
+            ${{ inputs.noconsole && '--noconsole' || '' }}
 
-      - name: 上传打包好的EXE
-        uses: actions/upload-artifact@v3
+      - name: 上传结果
+        uses: actions/upload-artifact@v4
         with:
-          name: 打包完成-${{ inputs.output_name }}-${{ inputs.pack_mode }}
-          path: dist/*
+          name: ${{ inputs.output_name }}-${{ inputs.mode }}
+          path: dist/
