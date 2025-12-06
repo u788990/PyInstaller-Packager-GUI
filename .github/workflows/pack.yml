@@ -1,0 +1,52 @@
+name: 云打包EXE（永久免费）
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_file:
+        description: '要打包的主Python文件路径（如 game/main.py）'
+        required: true
+        default: main.py
+      output_name:
+        description: '输出的EXE名字'
+        required: true
+        default: 我的游戏
+      mode:
+        description: '打包模式'
+        type: choice
+        options: [onefile, onedir]
+        default: onefile
+      noconsole:
+        description: '隐藏黑窗'
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 云打包
+        run: |
+          python main.py --cloud ^
+            --source "${{ inputs.source_file }}" ^
+            --name "${{ inputs.output_name }}" ^
+            --mode "${{ inputs.mode }}" ^
+            ${{ inputs.noconsole && '--noconsole' || '' }}
+
+      - name: 上传结果
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.output_name }}-${{ inputs.mode }}
+          path: dist/
