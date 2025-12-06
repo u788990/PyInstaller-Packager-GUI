@@ -1754,14 +1754,14 @@ def main():
         traceback.print_exc()
         input("按Enter键退出...")
 
-# ==================== 替换 main.py 文件底部的代码 ====================
-# 删除原来的 if __name__ == "__main__": 部分，替换成以下内容：
+# ==================== 替换 main.py 文件底部的 if __name__ == "__main__": 部分 ====================
+# 删除原来的内容，替换成以下代码
 
 if __name__ == "__main__":
     import sys
     import os
     
-    # ==================== GitHub Actions Cloud Mode ====================
+    # ==================== GitHub Actions Cloud Mode v4.5 ====================
     if "--cloud" in sys.argv:
         import argparse
         import io
@@ -1788,8 +1788,8 @@ if __name__ == "__main__":
         args = parser.parse_args()
         
         print("[Cloud] ========================================")
-        print("[Cloud] PyInstaller Cloud Packager v4.4")
-        print("[Cloud] Auto-detect dependencies")
+        print("[Cloud] PyInstaller Cloud Packager v4.5")
+        print("[Cloud] Full Dependency Auto-Detection")
         print("[Cloud] ========================================")
         print(f"[Cloud] Source: {args.source}")
         print(f"[Cloud] Output: {args.name}")
@@ -1802,6 +1802,146 @@ if __name__ == "__main__":
             print(f"[Cloud] ERROR: Source file not found: {args.source}")
             sys.exit(1)
         
+        # ==================== 依赖映射表 ====================
+        # import名 -> pip包名
+        PACKAGE_NAME_MAP = {
+            'cv2': 'opencv-python',
+            'PIL': 'Pillow',
+            'sklearn': 'scikit-learn',
+            'skimage': 'scikit-image',
+            'yaml': 'PyYAML',
+            'bs4': 'beautifulsoup4',
+            'dateutil': 'python-dateutil',
+            'dotenv': 'python-dotenv',
+            'serial': 'pyserial',
+        }
+        
+        # 标准库（不需要打包）
+        STDLIB = {
+            'abc', 'argparse', 'ast', 'asyncio', 'atexit', 'base64', 'bisect',
+            'builtins', 'bz2', 'calendar', 'cmath', 'collections', 'configparser',
+            'contextlib', 'copy', 'csv', 'ctypes', 'dataclasses', 'datetime',
+            'decimal', 'difflib', 'email', 'enum', 'functools', 'gc', 'getpass',
+            'glob', 'gzip', 'hashlib', 'heapq', 'html', 'http', 'importlib',
+            'inspect', 'io', 'itertools', 'json', 'logging', 'math', 'mimetypes',
+            'multiprocessing', 'operator', 'os', 'pathlib', 'pickle', 'platform',
+            'pprint', 'queue', 'random', 're', 'shutil', 'signal', 'socket',
+            'sqlite3', 'ssl', 'statistics', 'string', 'struct', 'subprocess',
+            'sys', 'tempfile', 'textwrap', 'threading', 'time', 'traceback',
+            'types', 'typing', 'unicodedata', 'unittest', 'urllib', 'uuid',
+            'warnings', 'weakref', 'webbrowser', 'xml', 'zipfile', 'zlib',
+            '__future__', '__main__', 'encodings', 'codecs', 'locale',
+            'gettext', 'struct', 'binascii', 'errno', 'faulthandler',
+            'linecache', 'reprlib', 'selectors', 'keyword', 'token', 'tokenize',
+        }
+        
+        # ==================== 各库的 hidden imports ====================
+        OPENCV_HIDDEN = [
+            'cv2',
+            'numpy',
+            'numpy.core._methods',
+            'numpy.lib.format',
+        ]
+        
+        NUMPY_HIDDEN = [
+            'numpy',
+            'numpy.core._methods',
+            'numpy.lib.format',
+            'numpy.core._dtype_ctypes',
+            'numpy.core._multiarray_umath',
+            'numpy.random.common',
+            'numpy.random.bounded_integers',
+            'numpy.random.entropy',
+        ]
+        
+        SCIPY_HIDDEN = [
+            'scipy',
+            'scipy.special._ufuncs_cxx',
+            'scipy.linalg.cython_blas',
+            'scipy.linalg.cython_lapack',
+            'scipy.integrate',
+            'scipy.integrate.lsoda',
+            'scipy.integrate.vode',
+            'scipy.sparse.csgraph._validation',
+        ]
+        
+        PYQT5_HIDDEN = [
+            'PyQt5',
+            'PyQt5.QtCore',
+            'PyQt5.QtGui',
+            'PyQt5.QtWidgets',
+            'PyQt5.sip',
+        ]
+        
+        TKINTER_HIDDEN = [
+            'tkinter',
+            'tkinter.ttk',
+            'tkinter.filedialog',
+            'tkinter.messagebox',
+            'tkinter.scrolledtext',
+        ]
+        
+        PIL_HIDDEN = [
+            'PIL',
+            'PIL.Image',
+            'PIL.ImageTk',
+            'PIL.ImageDraw',
+            'PIL.ImageFont',
+            'PIL.ImageFilter',
+            'PIL.ImageEnhance',
+            'PIL.ImageOps',
+        ]
+        
+        IMAGEIO_HIDDEN = [
+            'imageio',
+            'imageio.core',
+            'imageio.core.util',
+            'imageio.plugins',
+            'imageio_ffmpeg',
+            'imageio_ffmpeg._utils',
+        ]
+        
+        REMBG_HIDDEN = [
+            'rembg',
+            'rembg.sessions',
+            'rembg.sessions.base',
+            'onnxruntime',
+            'onnxruntime.capi',
+            'onnxruntime.capi._pybind_state',
+        ]
+        
+        SKIMAGE_HIDDEN = [
+            'skimage',
+            'skimage.io',
+            'skimage.transform',
+            'skimage.color',
+            'skimage.filters',
+            'skimage.feature',
+            'skimage._shared',
+        ]
+        
+        PYGAME_HIDDEN = [
+            'pygame',
+            'pygame.base',
+            'pygame.display',
+            'pygame.event',
+            'pygame.image',
+            'pygame.mixer',
+            'pygame.font',
+            'pygame.draw',
+            'pygame.transform',
+        ]
+        
+        COMMON_HIDDEN = [
+            'pkg_resources.py2_warn',
+            'pkg_resources.markers',
+            'encodings.utf_8',
+            'encodings.gbk',
+            'encodings.cp1252',
+            'encodings.ascii',
+            'encodings.latin_1',
+        ]
+        
         # 4. Auto-detect imports from source file
         print("[Cloud] Analyzing source file dependencies...")
         
@@ -1811,12 +1951,16 @@ if __name__ == "__main__":
                 with open(source_file, 'r', encoding='utf-8') as f:
                     source_code = f.read()
             except UnicodeDecodeError:
-                with open(source_file, 'r', encoding='gbk') as f:
-                    source_code = f.read()
+                try:
+                    with open(source_file, 'r', encoding='gbk') as f:
+                        source_code = f.read()
+                except:
+                    with open(source_file, 'r', encoding='latin-1') as f:
+                        source_code = f.read()
             
             imports = set()
             
-            # Parse AST to get imports
+            # Parse AST
             try:
                 tree = ast.parse(source_code)
                 for node in ast.walk(tree):
@@ -1841,24 +1985,64 @@ if __name__ == "__main__":
             return imports
         
         detected_imports = extract_imports(args.source)
-        print(f"[Cloud] Detected imports: {', '.join(sorted(detected_imports))}")
+        print(f"[Cloud] Detected {len(detected_imports)} imports: {', '.join(sorted(detected_imports)[:15])}...")
         
-        # 5. Standard library modules (don't need to be added as hidden imports)
-        STDLIB = {
-            'abc', 'argparse', 'ast', 'asyncio', 'atexit', 'base64', 'bisect',
-            'builtins', 'bz2', 'calendar', 'cmath', 'collections', 'configparser',
-            'contextlib', 'copy', 'csv', 'ctypes', 'dataclasses', 'datetime',
-            'decimal', 'difflib', 'email', 'enum', 'functools', 'gc', 'getpass',
-            'glob', 'gzip', 'hashlib', 'heapq', 'html', 'http', 'importlib',
-            'inspect', 'io', 'itertools', 'json', 'logging', 'math', 'mimetypes',
-            'multiprocessing', 'operator', 'os', 'pathlib', 'pickle', 'platform',
-            'pprint', 'queue', 'random', 're', 'shutil', 'signal', 'socket',
-            'sqlite3', 'ssl', 'statistics', 'string', 'struct', 'subprocess',
-            'sys', 'tempfile', 'textwrap', 'threading', 'time', 'traceback',
-            'types', 'typing', 'unicodedata', 'unittest', 'urllib', 'uuid',
-            'warnings', 'weakref', 'xml', 'zipfile', 'zlib',
-            '__future__', '__main__', 'builtins',
-        }
+        # 5. Build hidden imports based on detected dependencies
+        hidden_imports = set(COMMON_HIDDEN)
+        collect_all = []  # For --collect-all
+        
+        # Check each detected import and add appropriate hidden imports
+        if 'cv2' in detected_imports:
+            print("[Cloud] -> cv2 (OpenCV) detected")
+            hidden_imports.update(OPENCV_HIDDEN)
+            hidden_imports.update(NUMPY_HIDDEN)
+        
+        if 'numpy' in detected_imports or 'np' in detected_imports:
+            print("[Cloud] -> numpy detected")
+            hidden_imports.update(NUMPY_HIDDEN)
+        
+        if 'scipy' in detected_imports:
+            print("[Cloud] -> scipy detected")
+            hidden_imports.update(SCIPY_HIDDEN)
+            hidden_imports.update(NUMPY_HIDDEN)
+        
+        if 'PyQt5' in detected_imports:
+            print("[Cloud] -> PyQt5 detected")
+            hidden_imports.update(PYQT5_HIDDEN)
+            collect_all.append('PyQt5')
+        
+        if 'tkinter' in detected_imports:
+            print("[Cloud] -> tkinter detected")
+            hidden_imports.update(TKINTER_HIDDEN)
+        
+        if 'PIL' in detected_imports or 'Pillow' in detected_imports:
+            print("[Cloud] -> PIL/Pillow detected")
+            hidden_imports.update(PIL_HIDDEN)
+        
+        if 'imageio' in detected_imports:
+            print("[Cloud] -> imageio detected")
+            hidden_imports.update(IMAGEIO_HIDDEN)
+        
+        if 'rembg' in detected_imports:
+            print("[Cloud] -> rembg detected")
+            hidden_imports.update(REMBG_HIDDEN)
+            collect_all.append('rembg')
+        
+        if 'skimage' in detected_imports:
+            print("[Cloud] -> scikit-image detected")
+            hidden_imports.update(SKIMAGE_HIDDEN)
+            hidden_imports.update(NUMPY_HIDDEN)
+        
+        if 'pygame' in detected_imports:
+            print("[Cloud] -> pygame detected")
+            hidden_imports.update(PYGAME_HIDDEN)
+        
+        # Add all non-stdlib detected imports
+        for imp in detected_imports:
+            if imp not in STDLIB:
+                hidden_imports.add(imp)
+        
+        print(f"[Cloud] Total hidden imports: {len(hidden_imports)}")
         
         # 6. Get Python executable
         python_exe = sys.executable
@@ -1876,106 +2060,49 @@ if __name__ == "__main__":
         if args.noconsole:
             cmd.append("--noconsole")
         
-        # 8. Add detected imports as hidden imports
-        print("[Cloud] Adding hidden imports...")
-        
-        # PyQt5 specific submodules (very important!)
-        PYQT5_SUBMODULES = [
-            "PyQt5",
-            "PyQt5.QtCore",
-            "PyQt5.QtGui", 
-            "PyQt5.QtWidgets",
-            "PyQt5.sip",
-        ]
-        
-        # Tkinter specific submodules
-        TKINTER_SUBMODULES = [
-            "tkinter",
-            "tkinter.ttk",
-            "tkinter.filedialog",
-            "tkinter.messagebox",
-        ]
-        
-        # PIL/Pillow submodules
-        PIL_SUBMODULES = [
-            "PIL",
-            "PIL.Image",
-            "PIL.ImageTk",
-            "PIL.ImageDraw",
-            "PIL.ImageFont",
-        ]
-        
-        # Pygame submodules
-        PYGAME_SUBMODULES = [
-            "pygame",
-            "pygame.base",
-            "pygame.display",
-            "pygame.event",
-            "pygame.image",
-            "pygame.mixer",
-        ]
-        
-        # Common utility modules
-        COMMON_SUBMODULES = [
-            "pkg_resources.py2_warn",
-            "encodings.utf_8",
-            "encodings.gbk",
-            "encodings.cp1252",
-        ]
-        
-        hidden_imports = set(COMMON_SUBMODULES)
-        
-        # Add framework-specific imports based on detection
-        if "PyQt5" in detected_imports:
-            print("[Cloud] -> PyQt5 detected, adding Qt modules")
-            hidden_imports.update(PYQT5_SUBMODULES)
-        
-        if "tkinter" in detected_imports:
-            print("[Cloud] -> tkinter detected, adding Tk modules")
-            hidden_imports.update(TKINTER_SUBMODULES)
-        
-        if "PIL" in detected_imports or "Pillow" in detected_imports:
-            print("[Cloud] -> PIL/Pillow detected, adding image modules")
-            hidden_imports.update(PIL_SUBMODULES)
-        
-        if "pygame" in detected_imports:
-            print("[Cloud] -> pygame detected, adding game modules")
-            hidden_imports.update(PYGAME_SUBMODULES)
-        
-        # Add all detected third-party imports
-        for imp in detected_imports:
-            if imp not in STDLIB:
-                hidden_imports.add(imp)
-        
-        # Add to command
+        # Add hidden imports
         for hi in sorted(hidden_imports):
             cmd.extend(["--hidden-import", hi])
         
-        print(f"[Cloud] Total hidden imports: {len(hidden_imports)}")
+        # Add collect-all for complex packages
+        for pkg in collect_all:
+            cmd.extend(["--collect-all", pkg])
         
-        # 9. Exclude problematic modules
+        # Collect data for packages that need data files
+        if 'rembg' in detected_imports:
+            cmd.extend(["--collect-data", "rembg"])
+        if 'onnxruntime' in detected_imports or 'rembg' in detected_imports:
+            cmd.extend(["--collect-data", "onnxruntime"])
+        if 'imageio' in detected_imports:
+            cmd.extend(["--collect-data", "imageio"])
+        
+        # Exclude problematic modules
         exclude_modules = [
             "numpy.array_api",
             "numpy.distutils",
             "numpy.f2py",
+            "numpy.testing",
             "matplotlib.tests",
+            "scipy.spatial.cKDTree",
             "IPython",
             "pytest",
             "sphinx",
+            "setuptools",
+            "pip",
         ]
         
         for em in exclude_modules:
             cmd.extend(["--exclude-module", em])
         
-        # 10. Add source file
+        # Add source file
         cmd.append(args.source)
         
-        print(f"[Cloud] Command: {' '.join(cmd[:20])}...")
+        print(f"[Cloud] Command preview: {' '.join(cmd[:25])}...")
         print("[Cloud] ----------------------------------------")
         print("[Cloud] Starting PyInstaller...")
         print("[Cloud] ----------------------------------------")
         
-        # 11. Run PyInstaller
+        # 8. Run PyInstaller
         start_time = time.time()
         
         try:
@@ -1995,11 +2122,13 @@ if __name__ == "__main__":
             
         except Exception as e:
             print(f"[Cloud] ERROR running PyInstaller: {e}")
+            import traceback
+            traceback.print_exc()
             sys.exit(1)
         
         elapsed = time.time() - start_time
         
-        # 12. Check result
+        # 9. Check result
         if args.mode == "onefile":
             exe_path = Path("dist") / f"{args.name}.exe"
         else:
@@ -2009,13 +2138,15 @@ if __name__ == "__main__":
         
         if exe_path.exists():
             file_size = exe_path.stat().st_size / (1024 * 1024)
-            print(f"[Cloud] SUCCESS!")
+            print("[Cloud] ========================================")
+            print("[Cloud] SUCCESS!")
             print(f"[Cloud] Output: {exe_path}")
             print(f"[Cloud] Size: {file_size:.2f} MB")
             print(f"[Cloud] Time: {elapsed:.1f} seconds")
             print("[Cloud] ========================================")
             sys.exit(0)
         else:
+            print("[Cloud] ========================================")
             print(f"[Cloud] FAILED! Exit code: {returncode}")
             print(f"[Cloud] Expected output not found: {exe_path}")
             print("[Cloud] ========================================")
