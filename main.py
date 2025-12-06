@@ -1755,7 +1755,7 @@ def main():
         input("按Enter键退出...")
 
 if __name__ == "__main__":
-    # ==================== GitHub Actions 云打包专用（静默+自动带PyQt5）====================
+    # ==================== GitHub Actions Cloud Pack (No Chinese) ====================
     import argparse
     import sys
     import os
@@ -1763,24 +1763,23 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--cloud", action="store_true")
-    parser.add_argument("--source", default="main.py", help="要打包的主py文件")
-    parser.add_argument("--name", default="MyGame", help="输出exe名字")
+    parser.add_argument("--source", default="main.py")
+    parser.add_argument("--name", default="MyGame")
     parser.add_argument("--mode", choices=["onefile", "onedir"], default="onefile")
     parser.add_argument("--noconsole", action="store_true")
     args = parser.parse_args()
 
     if args.cloud:
-        print("[Cloud] 开始云打包（完全静默，自动处理PyQt5、图标、隐藏导入）")
-        os.environ["CLOUD_MODE"] = "1"          # 防止任何弹窗
-        os.environ["DISPLAY"] = ""              # 防止tkinter找显示器
+        print("[Cloud] Starting silent packaging...")
+        os.environ["CLOUD_MODE"] = "1"
+        os.environ["DISPLAY"] = ""
 
-        # 实例化但彻底瘫痪GUI部分
         packager = GamePackager()
         packager.root = None
         packager.message_queue.put = lambda *x: None
 
-        # 用假对象顶替所有Entry/Var
-        fake = lambda x=None: type('obj', (), {'get': lambda s: x})()
+        # 假对象顶替所有 GUI 控件
+        fake = lambda val: type('obj', (), {'get': lambda: val})()
         packager.source_entry = fake(args.source)
         packager.output_entry = fake(args.name)
         packager.pack_mode_var = fake(args.mode)
@@ -1788,11 +1787,11 @@ if __name__ == "__main__":
         packager.fast_mode_var = fake(True)
         packager.safe_mode_var = fake(True)
 
-        # 直接调用你最强的打包函数（自动分析依赖、自动装包、加hidden-import、处理图标……）
+        # 直接调用你最强的打包函数
         packager.pack_game(args.source)
 
-        print("[Cloud] 打包成功！exe在 dist 文件夹")
+        print("[Cloud] Packaging completed! Check dist folder.")
         sys.exit(0)
 
-    # 本地才弹出GUI
+    # 本地才显示中文 GUI
     main()
