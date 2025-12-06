@@ -1765,11 +1765,11 @@ if __name__ == "__main__":
     if "--cloud" in sys.argv:
         import argparse
         import io
-        import types
+        import ast
+        import re
         import subprocess
         import time
         from pathlib import Path
-        from queue import Queue
         
         # 1. Fix encoding - MUST be before any print
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -1788,7 +1788,8 @@ if __name__ == "__main__":
         args = parser.parse_args()
         
         print("[Cloud] ========================================")
-        print("[Cloud] PyInstaller Cloud Packager v4.3")
+        print("[Cloud] PyInstaller Cloud Packager v4.4")
+        print("[Cloud] Auto-detect dependencies")
         print("[Cloud] ========================================")
         print(f"[Cloud] Source: {args.source}")
         print(f"[Cloud] Output: {args.name}")
@@ -1801,11 +1802,69 @@ if __name__ == "__main__":
             print(f"[Cloud] ERROR: Source file not found: {args.source}")
             sys.exit(1)
         
-        # 4. Get Python executable
+        # 4. Auto-detect imports from source file
+        print("[Cloud] Analyzing source file dependencies...")
+        
+        def extract_imports(source_file):
+            """Extract all imports from Python source file"""
+            try:
+                with open(source_file, 'r', encoding='utf-8') as f:
+                    source_code = f.read()
+            except UnicodeDecodeError:
+                with open(source_file, 'r', encoding='gbk') as f:
+                    source_code = f.read()
+            
+            imports = set()
+            
+            # Parse AST to get imports
+            try:
+                tree = ast.parse(source_code)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        for alias in node.names:
+                            imports.add(alias.name.split('.')[0])
+                    elif isinstance(node, ast.ImportFrom):
+                        if node.module:
+                            imports.add(node.module.split('.')[0])
+            except SyntaxError as e:
+                print(f"[Cloud] Warning: AST parse error: {e}")
+            
+            # Also use regex for edge cases
+            import_patterns = [
+                r'^import\s+([\w\.]+)',
+                r'^from\s+([\w\.]+)\s+import',
+            ]
+            for pattern in import_patterns:
+                for match in re.finditer(pattern, source_code, re.MULTILINE):
+                    imports.add(match.group(1).split('.')[0])
+            
+            return imports
+        
+        detected_imports = extract_imports(args.source)
+        print(f"[Cloud] Detected imports: {', '.join(sorted(detected_imports))}")
+        
+        # 5. Standard library modules (don't need to be added as hidden imports)
+        STDLIB = {
+            'abc', 'argparse', 'ast', 'asyncio', 'atexit', 'base64', 'bisect',
+            'builtins', 'bz2', 'calendar', 'cmath', 'collections', 'configparser',
+            'contextlib', 'copy', 'csv', 'ctypes', 'dataclasses', 'datetime',
+            'decimal', 'difflib', 'email', 'enum', 'functools', 'gc', 'getpass',
+            'glob', 'gzip', 'hashlib', 'heapq', 'html', 'http', 'importlib',
+            'inspect', 'io', 'itertools', 'json', 'logging', 'math', 'mimetypes',
+            'multiprocessing', 'operator', 'os', 'pathlib', 'pickle', 'platform',
+            'pprint', 'queue', 'random', 're', 'shutil', 'signal', 'socket',
+            'sqlite3', 'ssl', 'statistics', 'string', 'struct', 'subprocess',
+            'sys', 'tempfile', 'textwrap', 'threading', 'time', 'traceback',
+            'types', 'typing', 'unicodedata', 'unittest', 'urllib', 'uuid',
+            'warnings', 'weakref', 'xml', 'zipfile', 'zlib',
+            '__future__', '__main__', 'builtins',
+        }
+        
+        # 6. Get Python executable
         python_exe = sys.executable
         print(f"[Cloud] Python: {python_exe}")
         
-        # 5. Build PyInstaller command directly (bypass GUI completely)
+        # 7. Build PyInstaller command
         cmd = [
             python_exe, "-m", "PyInstaller",
             "--clean",
@@ -1817,45 +1876,106 @@ if __name__ == "__main__":
         if args.noconsole:
             cmd.append("--noconsole")
         
-        # Add common hidden imports for tkinter apps
-        hidden_imports = [
+        # 8. Add detected imports as hidden imports
+        print("[Cloud] Adding hidden imports...")
+        
+        # PyQt5 specific submodules (very important!)
+        PYQT5_SUBMODULES = [
+            "PyQt5",
+            "PyQt5.QtCore",
+            "PyQt5.QtGui", 
+            "PyQt5.QtWidgets",
+            "PyQt5.sip",
+        ]
+        
+        # Tkinter specific submodules
+        TKINTER_SUBMODULES = [
             "tkinter",
             "tkinter.ttk",
             "tkinter.filedialog",
             "tkinter.messagebox",
+        ]
+        
+        # PIL/Pillow submodules
+        PIL_SUBMODULES = [
             "PIL",
             "PIL.Image",
             "PIL.ImageTk",
+            "PIL.ImageDraw",
+            "PIL.ImageFont",
+        ]
+        
+        # Pygame submodules
+        PYGAME_SUBMODULES = [
+            "pygame",
+            "pygame.base",
+            "pygame.display",
+            "pygame.event",
+            "pygame.image",
+            "pygame.mixer",
+        ]
+        
+        # Common utility modules
+        COMMON_SUBMODULES = [
             "pkg_resources.py2_warn",
             "encodings.utf_8",
             "encodings.gbk",
+            "encodings.cp1252",
         ]
         
-        for hi in hidden_imports:
+        hidden_imports = set(COMMON_SUBMODULES)
+        
+        # Add framework-specific imports based on detection
+        if "PyQt5" in detected_imports:
+            print("[Cloud] -> PyQt5 detected, adding Qt modules")
+            hidden_imports.update(PYQT5_SUBMODULES)
+        
+        if "tkinter" in detected_imports:
+            print("[Cloud] -> tkinter detected, adding Tk modules")
+            hidden_imports.update(TKINTER_SUBMODULES)
+        
+        if "PIL" in detected_imports or "Pillow" in detected_imports:
+            print("[Cloud] -> PIL/Pillow detected, adding image modules")
+            hidden_imports.update(PIL_SUBMODULES)
+        
+        if "pygame" in detected_imports:
+            print("[Cloud] -> pygame detected, adding game modules")
+            hidden_imports.update(PYGAME_SUBMODULES)
+        
+        # Add all detected third-party imports
+        for imp in detected_imports:
+            if imp not in STDLIB:
+                hidden_imports.add(imp)
+        
+        # Add to command
+        for hi in sorted(hidden_imports):
             cmd.extend(["--hidden-import", hi])
         
-        # Exclude problematic modules
+        print(f"[Cloud] Total hidden imports: {len(hidden_imports)}")
+        
+        # 9. Exclude problematic modules
         exclude_modules = [
             "numpy.array_api",
-            "numpy.distutils", 
+            "numpy.distutils",
             "numpy.f2py",
             "matplotlib.tests",
             "IPython",
             "pytest",
+            "sphinx",
         ]
         
         for em in exclude_modules:
             cmd.extend(["--exclude-module", em])
         
-        # Add source file
+        # 10. Add source file
         cmd.append(args.source)
         
-        print(f"[Cloud] Command: {' '.join(cmd[:15])}...")
+        print(f"[Cloud] Command: {' '.join(cmd[:20])}...")
         print("[Cloud] ----------------------------------------")
         print("[Cloud] Starting PyInstaller...")
         print("[Cloud] ----------------------------------------")
         
-        # 6. Run PyInstaller
+        # 11. Run PyInstaller
         start_time = time.time()
         
         try:
@@ -1868,7 +1988,6 @@ if __name__ == "__main__":
             )
             
             for line in process.stdout:
-                # Print each line (already UTF-8 safe)
                 print(f"[PyInstaller] {line.rstrip()}")
             
             process.wait()
@@ -1880,7 +1999,7 @@ if __name__ == "__main__":
         
         elapsed = time.time() - start_time
         
-        # 7. Check result
+        # 12. Check result
         if args.mode == "onefile":
             exe_path = Path("dist") / f"{args.name}.exe"
         else:
@@ -1903,5 +2022,4 @@ if __name__ == "__main__":
             sys.exit(1)
     
     # ==================== Local GUI Mode ====================
-    # Only runs when --cloud is NOT in arguments
     main()
