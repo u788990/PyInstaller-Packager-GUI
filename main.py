@@ -1755,52 +1755,77 @@ def main():
         input("按Enter键退出...")
 
 if __name__ == "__main__":
-    # ==================== GitHub Actions Cloud Pack - FINAL VERSION ====================
-    import argparse
     import sys
     import os
-    from main import GamePackager
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cloud", action="store_true")
-    parser.add_argument("--source", default="main.py")
-    parser.add_argument("--name", default="MyGame")
-    parser.add_argument("--mode", choices=["onefile", "onedir"], default="onefile")
-    parser.add_argument("--noconsole", action="store_true")
-    args = parser.parse_args()
-
-    if args.cloud:
-        print("[Cloud] Starting silent packaging (no GUI, no Chinese)...")
+    
+    # ==================== GitHub Actions Cloud Pack ====================
+    if "--cloud" in sys.argv:
+        import argparse
+        import io
+        import types
+        
+        # 1. 解决编码问题 - 必须在任何 print 之前
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+        os.environ['PYTHONIOENCODING'] = 'utf-8'
         os.environ["CLOUD_MODE"] = "1"
         os.environ["DISPLAY"] = ""
-
-        packager = GamePackager()
-
-        # 彻底瘫痪所有GUI相关属性，防止任何tkinter代码执行
+        
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--cloud", action="store_true")
+        parser.add_argument("--source", default="main.py")
+        parser.add_argument("--name", default="MyGame")
+        parser.add_argument("--mode", choices=["onefile", "onedir"], default="onefile")
+        parser.add_argument("--noconsole", action="store_true")
+        args = parser.parse_args()
+        
+        print("[Cloud] Starting silent packaging (no GUI, English only)...")
+        
+        # 2. 延迟导入，避免 argparse 冲突
+        from main import GamePackager
+        
+        packager = GamePackager.__new__(GamePackager)  # 跳过 __init__
+        
+        # 3. 手动初始化必要属性
         packager.root = None
         packager.progress = None
         packager.progress_label = None
         packager.log_text = None
-        packager.message_queue.put = lambda *x: None          # 静默丢弃所有日志
+        
+        # 4. 修复 dummy 对象
+        class DummyEntry:
+            def __init__(self, val):
+                self._val = val
+            def get(self):
+                return self._val
+        
+        packager.source_entry = DummyEntry(args.source)
+        packager.output_entry = DummyEntry(args.name)
+        packager.pack_mode_var = DummyEntry(args.mode)
+        packager.no_console_var = DummyEntry(args.noconsole)
+        packager.fast_mode_var = DummyEntry(True)
+        packager.safe_mode_var = DummyEntry(True)
+        packager.clean_var = DummyEntry(True)
+        
+        # 5. 完全禁用队列和日志
+        from queue import Queue
+        packager.message_queue = Queue()
         packager.add_log_message = lambda *x: None
         packager.add_check_message = lambda *x: None
-        packager.process_queue = lambda: None                # 彻底禁用 after 循环
-
-        # 用最简单的假对象顶替所有 .get()
-        dummy = lambda val: type('obj', (), {'get': lambda: val})()
-        packager.source_entry   = dummy(args.source)
-        packager.output_entry   = dummy(args.name)
-        packager.pack_mode_var  = dummy(args.mode)
-        packager.no_console_var = dummy(args.noconsole)
-        packager.fast_mode_var  = dummy(True)
-        packager.safe_mode_var  = dummy(True)
-        packager.clean_var      = dummy(True)
-
-        # 直接调用你最牛逼的 pack_game 函数
-        packager.pack_game(args.source)
-
-        print("[Cloud] Packaging finished! exe is in dist folder")
-        sys.exit(0)
-
-    # 本地才显示 GUI
+        
+        def silent_process_queue(self):
+            pass
+        packager.process_queue = types.MethodType(silent_process_queue, packager)
+        
+        # 6. 执行打包
+        try:
+            packager.pack_game(args.source)
+            print("[Cloud] Packaging finished! EXE is in dist folder")
+            sys.exit(0)
+        except Exception as e:
+            print(f"[Cloud] Error: {e}")
+            sys.exit(1)
+    
+    # 本地 GUI 模式
+    from main import main
     main()
