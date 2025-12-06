@@ -1754,28 +1754,31 @@ def main():
         traceback.print_exc()
         input("按Enter键退出...")
 
-# ==================== GitHub Actions Cloud Pack - FIXED VERSION ====================
-# Replace your existing __main__ block with this code
+# ==================== 替换 main.py 文件底部的代码 ====================
+# 删除原来的 if __name__ == "__main__": 部分，替换成以下内容：
 
 if __name__ == "__main__":
     import sys
     import os
     
-    # Check for cloud mode BEFORE any imports that might trigger argparse
+    # ==================== GitHub Actions Cloud Mode ====================
     if "--cloud" in sys.argv:
         import argparse
         import io
         import types
+        import subprocess
+        import time
+        from pathlib import Path
+        from queue import Queue
         
-        # 1. Fix encoding issues - MUST be before any print statements
+        # 1. Fix encoding - MUST be before any print
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
         os.environ['PYTHONIOENCODING'] = 'utf-8'
         os.environ['PYTHONUTF8'] = '1'
         os.environ["CLOUD_MODE"] = "1"
-        os.environ["DISPLAY"] = ""
         
-        # 2. Parse arguments (separate parser to avoid conflicts)
+        # 2. Parse arguments
         parser = argparse.ArgumentParser(prog='cloud_packager')
         parser.add_argument("--cloud", action="store_true")
         parser.add_argument("--source", default="main.py")
@@ -1784,102 +1787,121 @@ if __name__ == "__main__":
         parser.add_argument("--noconsole", action="store_true")
         args = parser.parse_args()
         
-        # All print messages in English to avoid encoding issues
-        print("[Cloud] Starting silent packaging (no GUI, UTF-8 mode)...")
+        print("[Cloud] ========================================")
+        print("[Cloud] PyInstaller Cloud Packager v4.3")
+        print("[Cloud] ========================================")
         print(f"[Cloud] Source: {args.source}")
-        print(f"[Cloud] Output name: {args.name}")
+        print(f"[Cloud] Output: {args.name}")
         print(f"[Cloud] Mode: {args.mode}")
         print(f"[Cloud] No console: {args.noconsole}")
+        print("[Cloud] ========================================")
         
-        # 3. Import GamePackager after setting up environment
-        from main import GamePackager
+        # 3. Check source file exists
+        if not os.path.exists(args.source):
+            print(f"[Cloud] ERROR: Source file not found: {args.source}")
+            sys.exit(1)
         
-        # 4. Create packager instance without running __init__ GUI code
-        packager = object.__new__(GamePackager)
+        # 4. Get Python executable
+        python_exe = sys.executable
+        print(f"[Cloud] Python: {python_exe}")
         
-        # 5. Initialize required attributes
-        packager.root = None
-        packager.progress = None
-        packager.progress_label = None
-        packager.log_text = None
-        packager.output_name = args.name
+        # 5. Build PyInstaller command directly (bypass GUI completely)
+        cmd = [
+            python_exe, "-m", "PyInstaller",
+            "--clean",
+            "--noconfirm",
+            f"--{'onefile' if args.mode == 'onefile' else 'onedir'}",
+            "--name", args.name,
+        ]
         
-        # 6. Fixed DummyEntry class - properly handles get() method
-        class DummyEntry:
-            """Mock tkinter Entry/Variable that returns a preset value"""
-            def __init__(self, val):
-                self._val = val
-            
-            def get(self):
-                return self._val
-            
-            def set(self, val):
-                self._val = val
-            
-            def config(self, **kwargs):
-                pass
-            
-            def configure(self, **kwargs):
-                pass
+        if args.noconsole:
+            cmd.append("--noconsole")
         
-        # 7. Set up all GUI variable mocks
-        packager.source_entry = DummyEntry(args.source)
-        packager.output_entry = DummyEntry(args.name)
-        packager.pack_mode_var = DummyEntry(args.mode)
-        packager.no_console_var = DummyEntry(args.noconsole)
-        packager.fast_mode_var = DummyEntry(True)
-        packager.safe_mode_var = DummyEntry(True)
-        packager.clean_var = DummyEntry(True)
+        # Add common hidden imports for tkinter apps
+        hidden_imports = [
+            "tkinter",
+            "tkinter.ttk",
+            "tkinter.filedialog",
+            "tkinter.messagebox",
+            "PIL",
+            "PIL.Image",
+            "PIL.ImageTk",
+            "pkg_resources.py2_warn",
+            "encodings.utf_8",
+            "encodings.gbk",
+        ]
         
-        # 8. Disable all queue and logging mechanisms
-        from queue import Queue
-        packager.message_queue = Queue()
+        for hi in hidden_imports:
+            cmd.extend(["--hidden-import", hi])
         
-        # Silent logging - print to console instead of GUI
-        def silent_log(msg, *args, **kwargs):
-            if os.environ.get("CLOUD_MODE") == "1":
-                # Convert any Chinese characters safely
-                try:
-                    clean_msg = str(msg).encode('utf-8', errors='replace').decode('utf-8')
-                    print(f"[Log] {clean_msg}")
-                except:
-                    pass
+        # Exclude problematic modules
+        exclude_modules = [
+            "numpy.array_api",
+            "numpy.distutils", 
+            "numpy.f2py",
+            "matplotlib.tests",
+            "IPython",
+            "pytest",
+        ]
         
-        packager.add_log_message = silent_log
-        packager.add_check_message = lambda *x, **kw: None
+        for em in exclude_modules:
+            cmd.extend(["--exclude-module", em])
         
-        # 9. Completely disable process_queue to prevent tkinter after() calls
-        def silent_process_queue(self):
-            """No-op to prevent tkinter after() errors"""
-            pass
+        # Add source file
+        cmd.append(args.source)
         
-        packager.process_queue = types.MethodType(silent_process_queue, packager)
+        print(f"[Cloud] Command: {' '.join(cmd[:15])}...")
+        print("[Cloud] ----------------------------------------")
+        print("[Cloud] Starting PyInstaller...")
+        print("[Cloud] ----------------------------------------")
         
-        # 10. Mock any other GUI methods that might be called
-        packager.update_progress = lambda *x, **kw: None
-        packager.show_error = lambda msg: print(f"[Error] {msg}")
-        packager.show_info = lambda msg: print(f"[Info] {msg}")
-        packager.show_warning = lambda msg: print(f"[Warning] {msg}")
+        # 6. Run PyInstaller
+        start_time = time.time()
         
-        # 11. Execute packaging
         try:
-            print("[Cloud] Calling pack_game()...")
-            packager.pack_game(args.source)
-            print("[Cloud] ========================================")
-            print("[Cloud] Packaging completed successfully!")
-            print("[Cloud] Output files are in the 'dist' folder")
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                bufsize=1
+            )
+            
+            for line in process.stdout:
+                # Print each line (already UTF-8 safe)
+                print(f"[PyInstaller] {line.rstrip()}")
+            
+            process.wait()
+            returncode = process.returncode
+            
+        except Exception as e:
+            print(f"[Cloud] ERROR running PyInstaller: {e}")
+            sys.exit(1)
+        
+        elapsed = time.time() - start_time
+        
+        # 7. Check result
+        if args.mode == "onefile":
+            exe_path = Path("dist") / f"{args.name}.exe"
+        else:
+            exe_path = Path("dist") / args.name / f"{args.name}.exe"
+        
+        print("[Cloud] ----------------------------------------")
+        
+        if exe_path.exists():
+            file_size = exe_path.stat().st_size / (1024 * 1024)
+            print(f"[Cloud] SUCCESS!")
+            print(f"[Cloud] Output: {exe_path}")
+            print(f"[Cloud] Size: {file_size:.2f} MB")
+            print(f"[Cloud] Time: {elapsed:.1f} seconds")
             print("[Cloud] ========================================")
             sys.exit(0)
-        except Exception as e:
-            print(f"[Cloud] ========================================")
-            print(f"[Cloud] ERROR during packaging: {type(e).__name__}")
-            print(f"[Cloud] Message: {e}")
-            print(f"[Cloud] ========================================")
-            import traceback
-            traceback.print_exc()
+        else:
+            print(f"[Cloud] FAILED! Exit code: {returncode}")
+            print(f"[Cloud] Expected output not found: {exe_path}")
+            print("[Cloud] ========================================")
             sys.exit(1)
     
     # ==================== Local GUI Mode ====================
-    # Only runs if --cloud is NOT in arguments
-    from main import main
+    # Only runs when --cloud is NOT in arguments
     main()
