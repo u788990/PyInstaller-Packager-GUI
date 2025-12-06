@@ -1755,45 +1755,37 @@ def main():
         input("按Enter键退出...")
 
 if __name__ == "__main__":
-    # ==================== GitHub Actions 云打包专用入口 ====================
+    # ==================== GitHub Actions 云打包专用（调用你自己的高级打包函数）====================
     import argparse
-    import subprocess
     import sys
-    from pathlib import Path
+    import os
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--cloud", action="store_true")
     parser.add_argument("--source", default="main.py")
-    parser.add_argument("--name", default="Game")
+    parser.add_argument("--name", default="MyGame")
     parser.add_argument("--mode", choices=["onefile", "onedir"], default="onefile")
     parser.add_argument("--noconsole", action="store_true")
     args, unknown = parser.parse_known_args()
 
     if args.cloud:
-        # 云模式：完全绕过GUI和所有中文print，直接裸奔PyInstaller
-        cmd = [
-            sys.executable, "-m", "PyInstaller",
-            "--noconfirm", "--clean",
-            "--name", args.name,
-        ]
-        if args.mode == "onefile":
-            cmd.append("--onefile")
-        if args.noconsole:
-            cmd.append("--noconsole")
-        # 可选：加你最常用的高级参数（根据你GUI默认值）
-        cmd.extend(["--exclude-module", "numpy.array_api"])
-        cmd.extend(["--exclude-module", "tkinter"])
-        cmd.append(args.source)
+        # 直接实例化你的工具类，然后强制走完整打包流程（和你本地点“打包”按钮一模一样）
+        os.environ["CLOUD_MODE"] = "1"        # 防止弹 GUI
+        from main import GamePackager
+        
+        app = GamePackager()
+        # 强制设置参数（模拟你手动填的）
+        app.source_entry.delete(0, tk.END)
+        app.source_entry.insert(0, args.source)
+        app.output_entry.delete(0, tk.END)
+        app.output_entry.insert(0, args.name)
+        app.pack_mode_var.set(args.mode)
+        app.no_console_var.set(args.noconsole)
+        
+        # 直接调用你自己的高级打包函数（它会自动处理 PyQt5、图标、排除模块、隐藏导入……）
+        app.pack_game(args.source)
+        print("[Cloud Pack] 打包完成！输出在 dist 文件夹")
+        sys.exit(0)
 
-        print("[Cloud Pack] Starting PyInstaller...")
-        result = subprocess.run(cmd, capture_output=False)
-        if result.returncode == 0:
-            print("[Cloud Pack] Success! Output in dist/")
-        else:
-            print("[Cloud Pack] Failed!")
-            sys.exit(1)
-        sys.exit(result.returncode)
-
-    # =================================================================
-    # 本地运行才走这里，保留你所有中文print和GUI
+    # 本地才走这里，正常弹出 GUI
     main()
