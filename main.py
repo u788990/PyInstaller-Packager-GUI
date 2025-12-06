@@ -1754,24 +1754,29 @@ def main():
         traceback.print_exc()
         input("按Enter键退出...")
 
+# ==================== GitHub Actions Cloud Pack - FIXED VERSION ====================
+# Replace your existing __main__ block with this code
+
 if __name__ == "__main__":
     import sys
     import os
     
-    # ==================== GitHub Actions Cloud Pack ====================
+    # Check for cloud mode BEFORE any imports that might trigger argparse
     if "--cloud" in sys.argv:
         import argparse
         import io
         import types
         
-        # 1. 解决编码问题 - 必须在任何 print 之前
+        # 1. Fix encoding issues - MUST be before any print statements
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
         os.environ['PYTHONIOENCODING'] = 'utf-8'
+        os.environ['PYTHONUTF8'] = '1'
         os.environ["CLOUD_MODE"] = "1"
         os.environ["DISPLAY"] = ""
         
-        parser = argparse.ArgumentParser()
+        # 2. Parse arguments (separate parser to avoid conflicts)
+        parser = argparse.ArgumentParser(prog='cloud_packager')
         parser.add_argument("--cloud", action="store_true")
         parser.add_argument("--source", default="main.py")
         parser.add_argument("--name", default="MyGame")
@@ -1779,26 +1784,45 @@ if __name__ == "__main__":
         parser.add_argument("--noconsole", action="store_true")
         args = parser.parse_args()
         
-        print("[Cloud] Starting silent packaging (no GUI, English only)...")
+        # All print messages in English to avoid encoding issues
+        print("[Cloud] Starting silent packaging (no GUI, UTF-8 mode)...")
+        print(f"[Cloud] Source: {args.source}")
+        print(f"[Cloud] Output name: {args.name}")
+        print(f"[Cloud] Mode: {args.mode}")
+        print(f"[Cloud] No console: {args.noconsole}")
         
-        # 2. 延迟导入，避免 argparse 冲突
+        # 3. Import GamePackager after setting up environment
         from main import GamePackager
         
-        packager = GamePackager.__new__(GamePackager)  # 跳过 __init__
+        # 4. Create packager instance without running __init__ GUI code
+        packager = object.__new__(GamePackager)
         
-        # 3. 手动初始化必要属性
+        # 5. Initialize required attributes
         packager.root = None
         packager.progress = None
         packager.progress_label = None
         packager.log_text = None
+        packager.output_name = args.name
         
-        # 4. 修复 dummy 对象
+        # 6. Fixed DummyEntry class - properly handles get() method
         class DummyEntry:
+            """Mock tkinter Entry/Variable that returns a preset value"""
             def __init__(self, val):
                 self._val = val
+            
             def get(self):
                 return self._val
+            
+            def set(self, val):
+                self._val = val
+            
+            def config(self, **kwargs):
+                pass
+            
+            def configure(self, **kwargs):
+                pass
         
+        # 7. Set up all GUI variable mocks
         packager.source_entry = DummyEntry(args.source)
         packager.output_entry = DummyEntry(args.name)
         packager.pack_mode_var = DummyEntry(args.mode)
@@ -1807,25 +1831,55 @@ if __name__ == "__main__":
         packager.safe_mode_var = DummyEntry(True)
         packager.clean_var = DummyEntry(True)
         
-        # 5. 完全禁用队列和日志
+        # 8. Disable all queue and logging mechanisms
         from queue import Queue
         packager.message_queue = Queue()
-        packager.add_log_message = lambda *x: None
-        packager.add_check_message = lambda *x: None
         
+        # Silent logging - print to console instead of GUI
+        def silent_log(msg, *args, **kwargs):
+            if os.environ.get("CLOUD_MODE") == "1":
+                # Convert any Chinese characters safely
+                try:
+                    clean_msg = str(msg).encode('utf-8', errors='replace').decode('utf-8')
+                    print(f"[Log] {clean_msg}")
+                except:
+                    pass
+        
+        packager.add_log_message = silent_log
+        packager.add_check_message = lambda *x, **kw: None
+        
+        # 9. Completely disable process_queue to prevent tkinter after() calls
         def silent_process_queue(self):
+            """No-op to prevent tkinter after() errors"""
             pass
+        
         packager.process_queue = types.MethodType(silent_process_queue, packager)
         
-        # 6. 执行打包
+        # 10. Mock any other GUI methods that might be called
+        packager.update_progress = lambda *x, **kw: None
+        packager.show_error = lambda msg: print(f"[Error] {msg}")
+        packager.show_info = lambda msg: print(f"[Info] {msg}")
+        packager.show_warning = lambda msg: print(f"[Warning] {msg}")
+        
+        # 11. Execute packaging
         try:
+            print("[Cloud] Calling pack_game()...")
             packager.pack_game(args.source)
-            print("[Cloud] Packaging finished! EXE is in dist folder")
+            print("[Cloud] ========================================")
+            print("[Cloud] Packaging completed successfully!")
+            print("[Cloud] Output files are in the 'dist' folder")
+            print("[Cloud] ========================================")
             sys.exit(0)
         except Exception as e:
-            print(f"[Cloud] Error: {e}")
+            print(f"[Cloud] ========================================")
+            print(f"[Cloud] ERROR during packaging: {type(e).__name__}")
+            print(f"[Cloud] Message: {e}")
+            print(f"[Cloud] ========================================")
+            import traceback
+            traceback.print_exc()
             sys.exit(1)
     
-    # 本地 GUI 模式
+    # ==================== Local GUI Mode ====================
+    # Only runs if --cloud is NOT in arguments
     from main import main
     main()
