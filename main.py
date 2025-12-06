@@ -1755,44 +1755,44 @@ def main():
         input("按Enter键退出...")
 
 if __name__ == "__main__":
-    # ==================== GitHub Actions 云打包专用（完全静默版）====================
+    # ==================== GitHub Actions 云打包专用（静默+自动带PyQt5）====================
     import argparse
     import sys
     import os
-    from main import GamePackager   # 只导入类，不创建实例
+    from main import GamePackager
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--cloud", action="store_true")
-    parser.add_argument("--source", dest="dummy", action="store_true")  # 兼容未知参数
-    parser.add_argument("--source", default="main.py")
-    parser.add_argument("--name", default="MyGame")
+    parser.add_argument("--source", default="main.py", help="要打包的主py文件")
+    parser.add_argument("--name", default="MyGame", help="输出exe名字")
     parser.add_argument("--mode", choices=["onefile", "onedir"], default="onefile")
     parser.add_argument("--noconsole", action="store_true")
-    args, unknown = parser.parse_known_args()
+    args = parser.parse_args()
 
     if args.cloud:
-        print("[Cloud] 开始云打包（静默模式，完全不弹窗）")
-        os.environ["CLOUD_MODE"] = "1"      # 标记云环境
-        os.environ["DISPLAY"] = ""         # 防止 tkinter 找显示器
+        print("[Cloud] 开始云打包（完全静默，自动处理PyQt5、图标、隐藏导入）")
+        os.environ["CLOUD_MODE"] = "1"          # 防止任何弹窗
+        os.environ["DISPLAY"] = ""              # 防止tkinter找显示器
 
-        # 只实例化核心，不创建任何 GUI 控件
+        # 实例化但彻底瘫痪GUI部分
         packager = GamePackager()
-        packager.root = None                # 强制让所有 tk 调用失效
-        packager.message_queue = type('obj', (object,), {'put': lambda *x: None})()
+        packager.root = None
+        packager.message_queue.put = lambda *x: None
 
-        # 强制设置参数
-        packager.source_entry = type('obj', (object,), {'get': lambda: args.source})()
-        packager.output_entry = type('obj', (object,), {'get': lambda: args.name})()
-        packager.pack_mode_var = type('obj', (object,), {'get': lambda: args.mode})()
-        packager.no_console_var = type('obj', (object,), {'get': lambda: args.noconsole})()
-        packager.fast_mode_var = type('obj', (object,), {'get': lambda: True})()
-        packager.safe_mode_var = type('obj', (object,), {'get': lambda: True})()
+        # 用假对象顶替所有Entry/Var
+        fake = lambda x=None: type('obj', (), {'get': lambda s: x})()
+        packager.source_entry = fake(args.source)
+        packager.output_entry = fake(args.name)
+        packager.pack_mode_var = fake(args.mode)
+        packager.no_console_var = fake(args.noconsole)
+        packager.fast_mode_var = fake(True)
+        packager.safe_mode_var = fake(True)
 
-        # 直接调用你最牛逼的 pack_game 函数（它会自动分析依赖、安装缺失、加隐藏导入、处理图标…）
+        # 直接调用你最强的打包函数（自动分析依赖、自动装包、加hidden-import、处理图标……）
         packager.pack_game(args.source)
 
-        print("[Cloud] 云打包完成！输出在 dist 文件夹")
+        print("[Cloud] 打包成功！exe在 dist 文件夹")
         sys.exit(0)
 
-    # 本地才走这里，正常弹出 GUI
+    # 本地才弹出GUI
     main()
