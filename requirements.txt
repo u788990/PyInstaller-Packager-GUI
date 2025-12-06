@@ -1,4 +1,23 @@
+# ==================== 云打包依赖 ====================
+# PyInstaller 打包工具
 PyInstaller>=6.0
+
+# 图像处理
 Pillow>=9.0
+opencv-python>=4.5
+numpy>=1.20
+
+# 图像/视频 IO
+imageio>=2.9
+imageio-ffmpeg>=0.4
+
+# 背景移除 (rembg) - CPU版本，GitHub Actions无GPU
+rembg>=2.0
+onnxruntime>=1.10
+
+# PyQt5 GUI
 PyQt5>=5.15
 
+# 其他可能需要的
+scipy>=1.7
+scikit-image>=0.18
