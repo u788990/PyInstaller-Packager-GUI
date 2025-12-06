@@ -14,9 +14,7 @@ on:
       mode:
         description: '打包模式'
         type: choice
-        options:
-          - onefile
-          - onedir
+        options: [onefile, onedir]
         default: onefile
       noconsole:
         description: '隐藏黑窗'
@@ -28,45 +26,23 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
+
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller
           pip install -r requirements.txt
-      
+
       - name: 云打包
-        run: python main.py --cloud --source "${{ inputs.source_file }}" --name "${{ inputs.output_name }}" --mode "${{ inputs.mode }}" ${{ inputs.noconsole == true && '--noconsole' || '' }}
-      
+        run: |
+          python main.py --cloud --source "$$ {{ inputs.source_file }}" --name " $${{ inputs.output_name }}" --mode "${{ inputs.mode }}" ${{ inputs.noconsole && '--noconsole' || '' }}
+
       - name: 上传结果
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.output_name }}-${{ inputs.mode }}
+          name: $$ {{ inputs.output_name }}- $${{ inputs.mode }}
           path: dist/
-```
-
----
-
-## 🔧 关键修改点
-
-| 问题 | 修复 |
-|------|------|
-| `options: [onefile, onedir]` | 改为列表格式 |
-| `^` 续行符 | 删除，写成一行 |
-| `$$ {{ ... }}` | 改为 `${{ ... }}` |
-| 缺少 pyinstaller | 添加 `pip install pyinstaller` |
-| 布尔判断 | `inputs.noconsole == true` |
-
----
-
-## 📋 另外检查 requirements.txt
-
-确保你的 `requirements.txt` 包含：
-```
-pyinstaller
-Pillow
