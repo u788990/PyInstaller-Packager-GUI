@@ -1755,7 +1755,7 @@ def main():
         input("按Enter键退出...")
 
 if __name__ == "__main__":
-    # ==================== GitHub Actions Cloud Pack (No Chinese) ====================
+    # ==================== GitHub Actions Cloud Pack - FINAL VERSION ====================
     import argparse
     import sys
     import os
@@ -1770,28 +1770,37 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.cloud:
-        print("[Cloud] Starting silent packaging...")
+        print("[Cloud] Starting silent packaging (no GUI, no Chinese)...")
         os.environ["CLOUD_MODE"] = "1"
         os.environ["DISPLAY"] = ""
 
         packager = GamePackager()
+
+        # 彻底瘫痪所有GUI相关属性，防止任何tkinter代码执行
         packager.root = None
-        packager.message_queue.put = lambda *x: None
+        packager.progress = None
+        packager.progress_label = None
+        packager.log_text = None
+        packager.message_queue.put = lambda *x: None          # 静默丢弃所有日志
+        packager.add_log_message = lambda *x: None
+        packager.add_check_message = lambda *x: None
+        packager.process_queue = lambda: None                # 彻底禁用 after 循环
 
-        # 假对象顶替所有 GUI 控件
-        fake = lambda val: type('obj', (), {'get': lambda: val})()
-        packager.source_entry = fake(args.source)
-        packager.output_entry = fake(args.name)
-        packager.pack_mode_var = fake(args.mode)
-        packager.no_console_var = fake(args.noconsole)
-        packager.fast_mode_var = fake(True)
-        packager.safe_mode_var = fake(True)
+        # 用最简单的假对象顶替所有 .get()
+        dummy = lambda val: type('obj', (), {'get': lambda: val})()
+        packager.source_entry   = dummy(args.source)
+        packager.output_entry   = dummy(args.name)
+        packager.pack_mode_var  = dummy(args.mode)
+        packager.no_console_var = dummy(args.noconsole)
+        packager.fast_mode_var  = dummy(True)
+        packager.safe_mode_var  = dummy(True)
+        packager.clean_var      = dummy(True)
 
-        # 直接调用你最强的打包函数
+        # 直接调用你最牛逼的 pack_game 函数
         packager.pack_game(args.source)
 
-        print("[Cloud] Packaging completed! Check dist folder.")
+        print("[Cloud] Packaging finished! exe is in dist folder")
         sys.exit(0)
 
-    # 本地才显示中文 GUI
+    # 本地才显示 GUI
     main()
