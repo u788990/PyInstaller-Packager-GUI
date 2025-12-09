@@ -101,7 +101,7 @@ class DependencyChecker:
     def has_critical_missing(cls):
         return len(cls.missing_required) > 0
 
-DependencyChecker.check_all()
+pass
 
 # 尝试导入可能缺失的库
 try:
@@ -149,10 +149,11 @@ from PyQt5.QtWidgets import (
     QHBoxLayout, QVBoxLayout, QGridLayout, QFileDialog, QProgressBar, QMessageBox,
     QTextEdit, QComboBox, QRadioButton, QButtonGroup, QGroupBox, QDoubleSpinBox,
     QTabWidget, QLineEdit, QDialog, QFrame, QToolTip, QSplitter, QPlainTextEdit,
-    QListWidgetItem, QColorDialog
+    QListWidgetItem, QColorDialog, QTableWidget, QTableWidgetItem, QAbstractItemView,
+    QHeaderView, QSizePolicy, QSlider, QSpacerItem, QStackedWidget, QFormLayout
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject
-from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QIcon, QPixmap
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject, QSize
+from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QIcon, QPixmap, QImage, QPainter, QPen, QBrush
 
 # ==================== 配置管理器 ====================
 class ConfigManager:
@@ -781,17 +782,15 @@ class ColorPickerWidget(QWidget):
         layout.addWidget(self.preset_combo)
         
         self.setLayout(layout)
-    
+
     def _on_text_changed(self, text: str):
-        """输入框文本变化时更新预览"""
         text = text.strip()
         if self._is_valid_color(text):
             self.current_color = text
             self._update_preview()
             self.color_changed.emit(text)
-    
+
     def _is_valid_color(self, color: str) -> bool:
-        """验证颜色代码格式"""
         if not color.startswith('#'):
             return False
         color = color[1:]
@@ -802,9 +801,8 @@ class ColorPickerWidget(QWidget):
             return True
         except ValueError:
             return False
-    
+
     def _update_preview(self):
-        """更新颜色预览"""
         self.color_preview.setStyleSheet(f"""
             QLabel {{
                 background-color: {self.current_color};
@@ -812,44 +810,803 @@ class ColorPickerWidget(QWidget):
                 border-radius: 3px;
             }}
         """)
-    
+
     def _open_color_dialog(self):
-        """打开系统颜色选择器"""
         initial_color = QColor(self.current_color)
         color = QColorDialog.getColor(initial_color, self, "选择背景颜色")
-        
         if color.isValid():
             hex_color = color.name().upper()
             self.current_color = hex_color
             self.color_edit.setText(hex_color)
             self._update_preview()
             self.color_changed.emit(hex_color)
-    
+
     def _on_preset_selected(self, index: int):
-        """选择预设颜色"""
         if index <= 0:
             return
-        
         color = self.preset_combo.itemData(index)
         if color:
             self.current_color = color
             self.color_edit.setText(color)
             self._update_preview()
             self.color_changed.emit(color)
-        
-        # 重置下拉框
         self.preset_combo.setCurrentIndex(0)
-    
+
     def get_color(self) -> str:
-        """获取当前颜色"""
         return self.current_color
-    
+
     def set_color(self, color: str):
-        """设置颜色"""
         if self._is_valid_color(color):
             self.current_color = color
             self.color_edit.setText(color)
             self._update_preview()
+
+class SpritePreviewDialog(QDialog):
+    def __init__(self, frames, fps=12, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("精灵预览")
+        self.label = QLabel()
+        self.label.setAlignment(Qt.AlignCenter)
+        layout = QVBoxLayout()
+        layout.addWidget(self.label)
+        self.setLayout(layout)
+        self.frames = frames
+        self.idx = 0
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._next)
+        self.timer.start(int(1000/max(1,fps)))
+        self._next()
+    def _to_pix(self, pil):
+        img = pil.convert('RGBA')
+        data = img.tobytes('raw', 'RGBA')
+        qimg = QImage(data, img.width, img.height, QImage.Format_RGBA8888)
+        return QPixmap.fromImage(qimg)
+    def _next(self):
+        if not self.frames:
+            return
+        pix = self._to_pix(self.frames[self.idx % len(self.frames)])
+        self.label.setPixmap(pix)
+        self.idx += 1
+
+class SpriteEditorDialog(QDialog):
+    def __init__(self, parent=None, source_sprite_path: str = None, frames: list = None, source_frames: list = None):
+        super().__init__(parent)
+        self.setWindowTitle("编辑精灵图")
+        self.setMinimumSize(1200, 800)
+        self.frames = []
+        self.index_map = []
+        self.scale_percent = 100
+        self.base_w, self.base_h = (128, 128)
+        main_layout = QHBoxLayout()
+        self.table = QTableWidget()
+        self.table.setSelectionMode(QAbstractItemView.MultiSelection)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+
+        left_panel = self._build_slice_params_panel()
+        left_panel.setMinimumWidth(300)
+        main_layout.addWidget(left_panel, 0)
+
+        right_layout = QVBoxLayout()
+        right_layout.addWidget(self.table, 1)
+        bottom_ctrl = self._build_output_controls()
+        right_layout.addLayout(bottom_ctrl)
+        right_widget = QWidget()
+        right_widget.setLayout(right_layout)
+        main_layout.addWidget(right_widget, 1)
+        self.setLayout(main_layout)
+        try:
+            self._on_seg_mode_changed(self.seg_mode.currentIndex())
+        except Exception:
+            pass
+        provided_frames = source_frames if source_frames is not None else frames
+        if provided_frames:
+            self.frames = provided_frames
+            try:
+                self.base_w, self.base_h = self.frames[0].size
+            except:
+                pass
+            cols = max(1, int(self.col_spin.value()))
+            self._populate(cols)
+            try:
+                self.display_cols = cols
+                self._capture_origin_state()
+            except Exception:
+                pass
+        elif source_sprite_path:
+            self.source_img = Image.open(source_sprite_path).convert('RGBA')
+            w, h = self.source_img.size
+            # 安全默认：不自动猜测超大行列，初始为 1x1，并默认自动检测
+            guess_rows = 1
+            guess_cols = 1
+            self.seg_mode.setCurrentIndex(0)
+            if hasattr(self, 'src_rows_spin') and hasattr(self, 'src_cols_spin'):
+                self.src_rows_spin.setValue(guess_rows)
+                self.src_cols_spin.setValue(guess_cols)
+                self.src_rows_spin.valueChanged.connect(lambda _: self._update_cell_size_label())
+                self.src_cols_spin.valueChanged.connect(lambda _: self._update_cell_size_label())
+            # 不在参数变化时自动切分，改为点击“应用分割”触发
+            self.frames = [self.source_img]
+            try:
+                self.base_w, self.base_h = self.source_img.size
+            except:
+                pass
+            self.col_spin.setValue(5)
+            try:
+                self._update_cell_size_label()
+            except Exception:
+                pass
+            self._populate(1)
+            try:
+                self.display_cols = 1
+                self._capture_origin_state()
+            except Exception:
+                pass
+        self.col_spin.valueChanged.connect(lambda _: self._populate(getattr(self, 'display_cols', max(1, int(self.col_spin.value())))))
+        if hasattr(self, 'preview_row_gap'):
+            self.preview_row_gap.valueChanged.connect(lambda _: self._populate(getattr(self, 'display_cols', max(1, int(self.col_spin.value())))))
+        self.table.itemSelectionChanged.connect(self._update_count)
+        try:
+            self._left_preview_update_timer()
+        except Exception:
+            pass
+        self.select_cols.stateChanged.connect(lambda s: self.table.setSelectionBehavior(QAbstractItemView.SelectColumns if self.select_cols.isChecked() else QAbstractItemView.SelectItems))
+        self.btn_select_all.clicked.connect(self._select_all)
+        self.btn_clear.clicked.connect(self._clear_selection)
+        self.scale_slider.valueChanged.connect(self._on_scale_changed)
+        self._update_count()
+
+    def _pil_to_pixmap(self, pil, idx):
+        img = pil.convert('RGBA')
+        data = img.tobytes('raw', 'RGBA')
+        qimg = QImage(data, img.width, img.height, QImage.Format_RGBA8888)
+        pix = QPixmap.fromImage(qimg)
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(0, 0, 22, 18, QBrush(QColor(0, 0, 0, 140)))
+        painter.setPen(QPen(QColor(255, 255, 255)))
+        painter.setFont(QFont("Microsoft YaHei UI", 9, QFont.Bold))
+        painter.drawText(4, 14, str(idx+1))
+        painter.end()
+        return pix
+
+    def _populate(self, cols):
+        total = len(self.frames)
+        selected_before = set(it.data(Qt.UserRole) for it in self.table.selectedItems())
+        use_grouping = hasattr(self, 'row_counts') and isinstance(getattr(self, 'row_counts'), list) and sum(getattr(self, 'row_counts')) == total and len(getattr(self, 'row_counts')) > 0
+        if use_grouping:
+            rows = len(self.row_counts)
+        else:
+            rows = math.ceil(total / max(1, cols))
+        self.table.clear()
+        self.table.setRowCount(rows)
+        self.table.setColumnCount(cols)
+        self.table.horizontalHeader().setVisible(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        self.table.verticalHeader().setDefaultSectionSize(0)
+        self.index_map = []
+        tw = max(16, int(self.base_w * self.scale_percent / 100))
+        th = max(16, int(self.base_h * self.scale_percent / 100))
+        self.table.setIconSize(QSize(tw, th))
+        for c in range(cols):
+            self.table.setColumnWidth(c, tw + 16)
+        if use_grouping:
+            i = 0
+            for r in range(rows):
+                cnt = max(0, int(self.row_counts[r]))
+                offset = max(0, (cols - cnt) // 2)
+                for j in range(cnt):
+                    if i >= total:
+                        break
+                    cc = offset + j
+                    item = QTableWidgetItem()
+                    item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+                    item.setData(Qt.UserRole, i)
+                    pix = self._pil_to_pixmap(self.frames[i], i).scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    item.setIcon(QIcon(pix))
+                    self.table.setItem(r, cc, item)
+                    self.index_map.append((r, cc, i))
+                    i += 1
+        else:
+            for i in range(total):
+                r = i // cols
+                c = i % cols
+                item = QTableWidgetItem()
+                item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+                item.setData(Qt.UserRole, i)
+                pix = self._pil_to_pixmap(self.frames[i], i).scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                item.setIcon(QIcon(pix))
+                self.table.setItem(r, c, item)
+                self.index_map.append((r, c, i))
+        gap = 0
+        try:
+            gap = int(self.preview_row_gap.value()) if hasattr(self, 'preview_row_gap') else 0
+        except Exception:
+            gap = 0
+        for r in range(rows):
+            self.table.setRowHeight(r, th + 16 + max(0, gap))
+        self.table.setHorizontalHeaderLabels([str(i+1) for i in range(cols)])
+        if selected_before:
+            for r, c, idx in self.index_map:
+                if idx in selected_before:
+                    it = self.table.item(r, c)
+                    if it:
+                        it.setSelected(True)
+        self.count_label.setText(f"{len(self.table.selectedItems())}/{total}")
+
+    def _on_scale_changed(self, val):
+        self.scale_percent = int(val)
+        self.scale_label.setText(f"{self.scale_percent}%")
+        self._populate(getattr(self, 'display_cols', max(1, int(self.col_spin.value()))))
+
+    def _update_count(self):
+        items = self.table.selectedItems()
+        total = len(self.frames)
+        self.count_label.setText(f"{len(items)}/{total}")
+
+    def _select_all(self):
+        self.table.selectAll()
+
+    def _clear_selection(self):
+        self.table.clearSelection()
+        self._update_count()
+
+    def get_selected_frames(self):
+        items = self.table.selectedItems()
+        idxs = sorted([it.data(Qt.UserRole) for it in items])
+        return [self.frames[i] for i in idxs]
+
+    def get_output_cols(self):
+        return max(1, int(self.col_spin.value()))
+
+    def _build_slice_params_panel(self):
+        panel = QGroupBox("分割设置")
+        panel.setFixedWidth(280)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+        mode_group = QGroupBox("分割方式")
+        mode_layout = QVBoxLayout()
+        mode_layout.setContentsMargins(4, 4, 4, 4)
+        mode_layout.setSpacing(4)
+        mode_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        mode_group.setMaximumHeight(60)
+        self.seg_mode = QComboBox()
+        self.seg_mode.addItems(["网格 (Grid)", "固定尺寸 (Fixed Size)", "自动检测 (Auto)", "配置文件 (Atlas)"])
+        self.seg_mode.currentIndexChanged.connect(self._on_seg_mode_changed)
+        mode_layout.addWidget(self.seg_mode)
+        mode_group.setLayout(mode_layout)
+        layout.addWidget(mode_group)
+        self.params_stack = QStackedWidget()
+        self.params_stack.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.params_stack.addWidget(self._build_grid_params())
+        self.params_stack.addWidget(self._build_fixed_size_params())
+        self.params_stack.addWidget(self._build_auto_detect_params())
+        self.params_stack.addWidget(self._build_atlas_params())
+        layout.addWidget(self.params_stack)
+        btn_row = QHBoxLayout()
+        apply_btn = QPushButton("应用分割")
+        apply_btn.clicked.connect(self._slice_source_sprite)
+        btn_row.addWidget(apply_btn)
+        self.undo_btn = QPushButton("撤销分割")
+        self.undo_btn.setEnabled(False)
+        self.undo_btn.clicked.connect(self._undo_slice)
+        btn_row.addWidget(self.undo_btn)
+        layout.addLayout(btn_row)
+        preview_group = QGroupBox("选中帧预览")
+        pg_layout = QVBoxLayout()
+        pg_layout.setContentsMargins(4, 4, 4, 4)
+        pg_layout.setSpacing(4)
+        self.left_preview_label = QLabel()
+        self.left_preview_label.setAlignment(Qt.AlignCenter)
+        self.left_preview_label.setMinimumHeight(280)
+        pg_layout.addWidget(self.left_preview_label)
+        ctrl_row = QHBoxLayout()
+        ctrl_row.addWidget(QLabel("速度 (fps):"))
+        self.left_preview_fps = QSpinBox()
+        self.left_preview_fps.setRange(1, 60)
+        self.left_preview_fps.setValue(12)
+        self.left_preview_fps.valueChanged.connect(self._left_preview_update_timer)
+        ctrl_row.addWidget(self.left_preview_fps)
+        ctrl_row.addStretch()
+        pg_layout.addLayout(ctrl_row)
+        preview_group.setLayout(pg_layout)
+        layout.addWidget(preview_group)
+        ok_cancel = QHBoxLayout()
+        ok_btn = QPushButton("确定")
+        cancel_btn = QPushButton("取消")
+        gif_btn = QPushButton("生成透明GIF")
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        ok_cancel.addStretch()
+        gif_btn.clicked.connect(self._on_generate_gif)
+        ok_cancel.addWidget(gif_btn)
+        ok_cancel.addWidget(ok_btn)
+        ok_cancel.addWidget(cancel_btn)
+        layout.addLayout(ok_cancel)
+        panel.setLayout(layout)
+        return panel
+
+    def _on_seg_mode_changed(self, idx):
+        self.params_stack.setCurrentIndex(idx)
+        try:
+            w = self.params_stack.currentWidget()
+            if w:
+                h = w.sizeHint().height()
+                self.params_stack.setMinimumHeight(h)
+                self.params_stack.setMaximumHeight(h)
+        except Exception:
+            pass
+
+    def _build_output_controls(self):
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(QLabel("输出列数:"))
+        self.col_spin = QSpinBox(); self.col_spin.setRange(1, 1000); self.col_spin.setValue(5)
+        ctrl.addWidget(self.col_spin)
+        self.select_cols = QCheckBox("按列选择")
+        ctrl.addWidget(self.select_cols)
+        ctrl.addWidget(QLabel("行间距:"))
+        self.preview_row_gap = QSpinBox()
+        self.preview_row_gap.setRange(0, 64)
+        self.preview_row_gap.setValue(0)
+        ctrl.addWidget(self.preview_row_gap)
+        ctrl.addWidget(QLabel("缩放:"))
+        self.scale_slider = QSlider(Qt.Horizontal)
+        self.scale_slider.setRange(25, 200)
+        self.scale_slider.setValue(self.scale_percent)
+        self.scale_slider.setTickInterval(5)
+        self.scale_slider.setSingleStep(5)
+        ctrl.addWidget(self.scale_slider)
+        self.scale_label = QLabel(f"{self.scale_percent}%")
+        ctrl.addWidget(self.scale_label)
+        self.btn_select_all = QPushButton("全选")
+        self.btn_clear = QPushButton("全不选")
+        ctrl.addWidget(self.btn_select_all)
+        ctrl.addWidget(self.btn_clear)
+        self.count_label = QLabel("0/")
+        ctrl.addWidget(self.count_label)
+        ctrl.addStretch()
+        return ctrl
+
+    def _pil_to_pixmap_raw(self, pil):
+        img = pil.convert('RGBA')
+        data = img.tobytes('raw', 'RGBA')
+        qimg = QImage(data, img.width, img.height, QImage.Format_RGBA8888)
+        return QPixmap.fromImage(qimg)
+
+    def _left_preview_update_timer(self):
+        try:
+            fps = max(1, int(self.left_preview_fps.value()))
+            if not hasattr(self, 'left_preview_timer'):
+                self.left_preview_timer = QTimer(self)
+                self.left_preview_timer.timeout.connect(self._left_preview_next)
+            self.left_preview_timer.start(int(1000/max(1,fps)))
+        except Exception:
+            pass
+
+    def _left_preview_next(self):
+        try:
+            frames = self._get_selected_or_all_frames()
+            if not frames:
+                self.left_preview_label.clear()
+                return
+            if not hasattr(self, 'left_preview_idx'):
+                self.left_preview_idx = 0
+            pix = self._pil_to_pixmap_raw(frames[self.left_preview_idx % len(frames)])
+            sw = self.left_preview_label.width() if self.left_preview_label.width() > 0 else pix.width()
+            sh = self.left_preview_label.height() if self.left_preview_label.height() > 0 else pix.height()
+            pix = pix.scaled(sw, sh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.left_preview_label.setPixmap(pix)
+            self.left_preview_idx += 1
+        except Exception:
+            pass
+
+    def _get_selected_or_all_frames(self):
+        try:
+            items = self.table.selectedItems()
+            if items:
+                idxs = sorted([it.data(Qt.UserRole) for it in items])
+                return [self.frames[i] for i in idxs]
+            return list(self.frames)
+        except Exception:
+            return []
+
+    def _on_generate_gif(self):
+        try:
+            frames = self._get_selected_or_all_frames()
+            if not frames:
+                QMessageBox.warning(self, "提示", "没有可用帧")
+                return
+            fps = max(1, int(self.left_preview_fps.value())) if hasattr(self, 'left_preview_fps') else 12
+            dur = 1.0 / float(max(1, fps))
+            default_dir = os.path.dirname(self.source_sprite_path) if getattr(self, 'source_sprite_path', None) else str(Path.cwd())
+            default_name = (Path(self.source_sprite_path).stem + "_prev.gif") if getattr(self, 'source_sprite_path', None) else "preview.gif"
+            save_path, _ = QFileDialog.getSaveFileName(self, "保存透明GIF", str(Path(default_dir) / default_name), "GIF (*.gif)")
+            if not save_path:
+                return
+            imgs = []
+            for im in frames:
+                if im.mode != 'RGBA':
+                    im = im.convert('RGBA')
+                imgs.append(np.array(im))
+            imageio.mimsave(save_path, imgs, format='GIF', duration=dur, loop=0)
+            QMessageBox.information(self, "完成", f"GIF 已保存:\n{save_path}")
+        except Exception as e:
+            try:
+                QMessageBox.critical(self, "错误", str(e))
+            except:
+                pass
+    def _build_grid_params(self):
+        w = QWidget()
+        fl = QFormLayout()
+        fl.setContentsMargins(4, 2, 4, 2)
+        fl.setSpacing(2)
+        fl.setRowWrapPolicy(QFormLayout.DontWrapRows)
+        self.src_cols_spin = QSpinBox(); self.src_cols_spin.setRange(1, 100); self.src_cols_spin.setValue(1)
+        self.src_rows_spin = QSpinBox(); self.src_rows_spin.setRange(1, 100); self.src_rows_spin.setValue(1)
+        fl.addRow("列数:", self.src_cols_spin)
+        fl.addRow("行数:", self.src_rows_spin)
+        self.cell_size_label = QLabel("单帧尺寸: -- x --")
+        self.cell_size_label.setWordWrap(False)
+        fl.addRow(self.cell_size_label)
+        self.src_cols_spin.valueChanged.connect(lambda _: self._update_cell_size_label())
+        self.src_rows_spin.valueChanged.connect(lambda _: self._update_cell_size_label())
+        w.setLayout(fl)
+        return w
+    def _build_fixed_size_params(self):
+        w = QWidget()
+        fl = QFormLayout()
+        self.fix_w_spin = QSpinBox(); self.fix_w_spin.setRange(1, 4096); self.fix_w_spin.setValue(64)
+        self.fix_h_spin = QSpinBox(); self.fix_h_spin.setRange(1, 4096); self.fix_h_spin.setValue(64)
+        self.fix_pad_spin = QSpinBox(); self.fix_pad_spin.setRange(0, 256); self.fix_pad_spin.setValue(0)
+        self.fix_margin_spin = QSpinBox(); self.fix_margin_spin.setRange(0, 256); self.fix_margin_spin.setValue(0)
+        fl.addRow("帧宽度:", self.fix_w_spin)
+        fl.addRow("帧高度:", self.fix_h_spin)
+        fl.addRow("帧间距:", self.fix_pad_spin)
+        fl.addRow("边缘留白:", self.fix_margin_spin)
+        w.setLayout(fl)
+        return w
+    def _build_auto_detect_params(self):
+        w = QWidget()
+        fl = QFormLayout()
+        self.alpha_thr_spin = QSpinBox(); self.alpha_thr_spin.setRange(0, 255); self.alpha_thr_spin.setValue(10)
+        self.min_size_spin = QSpinBox(); self.min_size_spin.setRange(1, 100000); self.min_size_spin.setValue(64)
+        fl.addRow("透明度阈值:", self.alpha_thr_spin)
+        fl.addRow("最小面积:", self.min_size_spin)
+        hint = QLabel("自动检测连通的不透明区域")
+        hint.setStyleSheet("color: #666; font-size: 9pt;")
+        hint.setWordWrap(True)
+        fl.addRow(hint)
+        w.setLayout(fl)
+        return w
+    def _build_atlas_params(self):
+        w = QWidget()
+        vl = QVBoxLayout()
+        self.atlas_edit = QLineEdit(); self.atlas_edit.setPlaceholderText("选择 JSON 配置文件...")
+        vl.addWidget(self.atlas_edit)
+        self.atlas_btn = QPushButton("浏览...")
+        self.atlas_btn.clicked.connect(self._select_atlas_file)
+        vl.addWidget(self.atlas_btn)
+        hint = QLabel("支持 TexturePacker 导出的 JSON 格式")
+        hint.setStyleSheet("color: #666; font-size: 9pt;")
+        hint.setWordWrap(True)
+        vl.addWidget(hint)
+        vl.addStretch()
+        w.setLayout(vl)
+        return w
+    def _update_cell_size_label(self):
+        try:
+            if hasattr(self, 'source_img'):
+                w, h = self.source_img.size
+                cols = max(1, int(self.src_cols_spin.value())) if hasattr(self, 'src_cols_spin') else 1
+                rows = max(1, int(self.src_rows_spin.value())) if hasattr(self, 'src_rows_spin') else 1
+                cw0 = w // max(1, cols)
+                ch0 = h // max(1, rows)
+                rem_w = w % max(1, cols)
+                rem_h = h % max(1, rows)
+                if rem_w == 0 and rem_h == 0:
+                    self.cell_size_label.setStyleSheet("")
+                    self.cell_size_label.setText(f"单帧尺寸: {cw0} x {ch0}")
+                else:
+                    self.cell_size_label.setStyleSheet("color:#666;")
+                    self.cell_size_label.setText(f"单帧尺寸约: {cw0}~{cw0+1} x {ch0}~{ch0+1}")
+            else:
+                self.cell_size_label.setText("单帧尺寸: -- x --")
+        except Exception:
+            pass
+    def _select_atlas_file(self):
+        try:
+            p, _ = QFileDialog.getOpenFileName(self, "选择配置文件", "", "JSON (*.json)")
+            if p:
+                self.atlas_edit.setText(p)
+                self._slice_source_sprite()
+        except Exception:
+            pass
+    def _slice_source_sprite(self):
+        try:
+            if not hasattr(self, 'source_img'):
+                return
+            text = self.seg_mode.currentText() if hasattr(self, 'seg_mode') else "网格 (Grid)"
+            w, h = self.source_img.size
+            self.frames = []
+            if text.startswith("网格"):
+                rows = max(1, int(self.src_rows_spin.value())) if self.src_rows_spin else 1
+                cols = max(1, int(self.src_cols_spin.value())) if self.src_cols_spin else 1
+                rows = min(rows, 100)
+                cols = min(cols, 100)
+                def make_cuts(total_size, parts):
+                    base = total_size // parts
+                    rem = total_size % parts
+                    widths = [base] * parts
+                    if rem > 0:
+                        order = []
+                        if parts % 2 == 1:
+                            mid = parts // 2
+                            order = [mid]
+                            k = 1
+                            while len(order) < parts:
+                                if mid - k >= 0:
+                                    order.append(mid - k)
+                                if mid + k < parts:
+                                    order.append(mid + k)
+                                k += 1
+                        else:
+                            lm = parts // 2 - 1
+                            rm = parts // 2
+                            order = [lm, rm]
+                            k = 1
+                            while len(order) < parts:
+                                if lm - k >= 0:
+                                    order.append(lm - k)
+                                if rm + k < parts:
+                                    order.append(rm + k)
+                                k += 1
+                        for i in range(rem):
+                            widths[order[i]] += 1
+                    cuts = [0]
+                    acc = 0
+                    for wi in widths:
+                        acc += wi
+                        cuts.append(acc)
+                    return cuts
+                xcuts = make_cuts(w, cols)
+                ycuts = make_cuts(h, rows)
+                total = rows * cols
+                for idx in range(total):
+                    c = idx % cols
+                    r = idx // cols
+                    box = (xcuts[c], ycuts[r], xcuts[c+1], ycuts[r+1])
+                    self.frames.append(self.source_img.crop(box))
+                self.display_cols = cols
+                self.row_counts = [cols] * rows
+                if hasattr(self, 'undo_btn'):
+                    self.undo_btn.setEnabled(True)
+            elif text.startswith("固定尺寸"):
+                mw = max(0, int(self.fix_margin_spin.value()))
+                mh = mw
+                pw = max(0, int(self.fix_pad_spin.value()))
+                fw = max(1, int(self.fix_w_spin.value()))
+                fh = max(1, int(self.fix_h_spin.value()))
+                x_start = mw; x_end = w - mw
+                y_start = mh; y_end = h - mh
+                avail_w = max(0, x_end - x_start)
+                avail_h = max(0, y_end - y_start)
+                cols = max(1, (avail_w + pw) // (fw + pw))
+                rows = max(1, (avail_h + pw) // (fh + pw))
+                extra_w = avail_w - (cols * fw + max(0, cols-1) * pw)
+                extra_h = avail_h - (rows * fh + max(0, rows-1) * pw)
+                def make_cuts_fixed(avail, parts, size, gap, extra):
+                    if parts <= 0:
+                        return [0]
+                    gaps_count = max(0, parts-1)
+                    gaps = [gap] * gaps_count
+                    if extra > 0 and gaps_count > 0:
+                        order = []
+                        if parts % 2 == 1:
+                            mid = parts // 2
+                            k = 1
+                            # 将额外像素优先分配到中间相邻的间隙：mid-1 与 mid
+                            if mid-1 >= 0:
+                                order.append(mid-1)
+                            if mid < gaps_count:
+                                order.append(mid)
+                            while len(order) < gaps_count:
+                                if mid-1-k >= 0:
+                                    order.append(mid-1-k)
+                                if mid+k < gaps_count:
+                                    order.append(mid+k)
+                                k += 1
+                        else:
+                            lm = parts // 2 - 1
+                            rm = parts // 2 - 0
+                            order = [lm, rm]
+                            k = 1
+                            while len(order) < gaps_count:
+                                if lm- k >= 0:
+                                    order.append(lm- k)
+                                if rm+ k < gaps_count:
+                                    order.append(rm+ k)
+                                k += 1
+                        for i in range(extra):
+                            gaps[order[i % gaps_count]] += 1
+                    cuts = [0]
+                    acc = 0
+                    for i in range(parts):
+                        acc += size
+                        cuts.append(acc)
+                        if i < gaps_count:
+                            acc += gaps[i]
+                    return cuts
+                xcuts_rel = make_cuts_fixed(avail_w, cols, fw, pw, max(0, extra_w))
+                ycuts_rel = make_cuts_fixed(avail_h, rows, fh, pw, max(0, extra_h))
+                xcuts = [x_start + v for v in xcuts_rel]
+                ycuts = [y_start + v for v in ycuts_rel]
+                for r in range(rows):
+                    for c in range(cols):
+                        box = (xcuts[c], ycuts[r], xcuts[c+1], ycuts[r+1])
+                        self.frames.append(self.source_img.crop(box))
+                self.display_cols = max(1, cols)
+                self.row_counts = [cols] * rows
+                if hasattr(self, 'undo_btn'):
+                    self.undo_btn.setEnabled(True)
+            else:
+                if text.startswith("自动检测"):
+                    thr = max(0, min(255, int(self.alpha_thr_spin.value())))
+                    min_area = max(1, int(self.min_size_spin.value()))
+                    px = self.source_img.load()
+                    visited = [[False]*w for _ in range(h)]
+                    dirs = [(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,1),(1,-1),(-1,-1)]
+                    boxes = []
+                    for yy in range(h):
+                        for xx in range(w):
+                            if visited[yy][xx]:
+                                continue
+                            if px[xx, yy][3] <= thr:
+                                visited[yy][xx] = True
+                                continue
+                            stack = [(xx, yy)]
+                            minx = xx; miny = yy; maxx = xx; maxy = yy; area = 0
+                            while stack:
+                                x0, y0 = stack.pop()
+                                if x0 < 0 or x0 >= w or y0 < 0 or y0 >= h:
+                                    continue
+                                if visited[y0][x0]:
+                                    continue
+                                visited[y0][x0] = True
+                                if px[x0, y0][3] <= thr:
+                                    continue
+                                area += 1
+                                if x0 < minx: minx = x0
+                                if x0 > maxx: maxx = x0
+                                if y0 < miny: miny = y0
+                                if y0 > maxy: maxy = y0
+                                for dx, dy in dirs:
+                                    nx = x0 + dx; ny = y0 + dy
+                                    if 0 <= nx < w and 0 <= ny < h and not visited[ny][nx]:
+                                        stack.append((nx, ny))
+                            if area >= min_area:
+                                boxes.append((minx, miny, maxx+1, maxy+1))
+                    boxes.sort(key=lambda b: (b[1], b[0]))
+                    if boxes:
+                        avg_h = int(sum(b[3]-b[1] for b in boxes) / max(1, len(boxes)))
+                        thresh = max(8, avg_h // 2)
+                    else:
+                        thresh = 0
+                    groups = []
+                    current = []
+                    last_y = None
+                    for b in boxes:
+                        y0 = b[1]
+                        if last_y is None or abs(y0 - last_y) <= thresh:
+                            current.append(b)
+                        else:
+                            groups.append(current)
+                            current = [b]
+                        last_y = y0
+                    if current:
+                        groups.append(current)
+                    self.frames = []
+                    for g in groups:
+                        for b in g:
+                            self.frames.append(self.source_img.crop(b))
+                    self.display_cols = max(len(g) for g in groups) if groups else max(1, int(self.col_spin.value()))
+                    self.row_counts = [len(g) for g in groups]
+                    if hasattr(self, 'undo_btn'):
+                        self.undo_btn.setEnabled(True)
+                else:
+                    p = self.atlas_edit.text() if hasattr(self, 'atlas_edit') else ''
+                    if p and os.path.exists(p):
+                        try:
+                            with open(p, 'r', encoding='utf-8') as f:
+                                data = json.load(f)
+                            infos = []
+                            if isinstance(data.get('frames'), dict):
+                                for name, fr in data['frames'].items():
+                                    if 'frame' in fr:
+                                        x = int(fr['frame']['x']); y = int(fr['frame']['y']);
+                                        fw = int(fr['frame']['w']); fh = int(fr['frame']['h'])
+                                        rot = bool(fr.get('rotated', False))
+                                    else:
+                                        x = int(fr.get('x', 0)); y = int(fr.get('y', 0));
+                                        fw = int(fr.get('w', fr.get('width', 0))); fh = int(fr.get('h', fr.get('height', 0)))
+                                        rot = bool(fr.get('rotated', False))
+                                    infos.append((x, y, fw, fh, rot))
+                            elif isinstance(data.get('frames'), list):
+                                for fr in data['frames']:
+                                    frame_obj = fr.get('frame', {})
+                                    x = int(frame_obj.get('x', fr.get('x', 0)))
+                                    y = int(frame_obj.get('y', fr.get('y', 0)))
+                                    fw = int(frame_obj.get('w', fr.get('w', fr.get('width', 0))))
+                                    fh = int(frame_obj.get('h', fr.get('h', fr.get('height', 0))))
+                                    rot = bool(fr.get('rotated', False))
+                                    infos.append((x, y, fw, fh, rot))
+                            infos.sort(key=lambda t: (t[1], t[0]))
+                            frames = []
+                            for x, y, fw, fh, rot in infos:
+                                crop = self.source_img.crop((x, y, x+fw, y+fh))
+                                if rot:
+                                    crop = crop.rotate(-90, expand=True)
+                                frames.append(crop)
+                            self.frames = frames
+                            if infos:
+                                avg_h = int(sum(hh for _,_,_,hh,_ in infos) / max(1, len(infos)))
+                                thresh = max(8, avg_h // 2)
+                                groups = []
+                                current = []
+                                last_y = None
+                                for x,y,fw,fh,rot in infos:
+                                    if last_y is None or abs(y - last_y) <= thresh:
+                                        current.append((x,y,fw,fh,rot))
+                                    else:
+                                        groups.append(current)
+                                        current = [(x,y,fw,fh,rot)]
+                                    last_y = y
+                                if current:
+                                    groups.append(current)
+                                self.display_cols = max(len(g) for g in groups) if groups else max(1, int(self.col_spin.value()))
+                                self.row_counts = [len(g) for g in groups]
+                                if hasattr(self, 'undo_btn'):
+                                    self.undo_btn.setEnabled(True)
+                        except Exception:
+                            pass
+            try:
+                self.base_w, self.base_h = self.frames[0].size
+            except:
+                pass
+            self._populate(getattr(self, 'display_cols', max(1, int(self.col_spin.value()))))
+        except Exception:
+            pass
+
+    def _capture_origin_state(self):
+        try:
+            self._origin_state = {
+                'frames': [self.source_img] if hasattr(self, 'source_img') else (list(self.frames) if hasattr(self, 'frames') else []),
+                'display_cols': 1,
+                'row_counts': [1],
+                'base_w': getattr(self, 'base_w', None),
+                'base_h': getattr(self, 'base_h', None)
+            }
+            if hasattr(self, 'undo_btn'):
+                self.undo_btn.setEnabled(False)
+        except Exception:
+            pass
+
+    def _undo_slice(self):
+        try:
+            if hasattr(self, '_origin_state'):
+                self.frames = list(self._origin_state.get('frames', []))
+                self.display_cols = self._origin_state.get('display_cols', 1)
+                self.row_counts = self._origin_state.get('row_counts', [1])
+                self.base_w = self._origin_state.get('base_w', self.base_w)
+                self.base_h = self._origin_state.get('base_h', self.base_h)
+                self._populate(getattr(self, 'display_cols', 1))
+                if hasattr(self, 'undo_btn'):
+                    self.undo_btn.setEnabled(False)
+        except Exception:
+            pass
 
 # ==================== 自定义UI组件 ====================
 class FileDropLineEdit(QLineEdit):
@@ -1515,8 +2272,12 @@ class VideoRemoveBgWorker(BaseWorker):
                 return
             
             output_format = self.params.get("output_format", "mp4")
-            
-            if output_format == "webm":
+            preserve_alpha = self.params.get("preserve_alpha", False)
+
+            if output_format == "webm" and preserve_alpha:
+                self._save_webm_with_alpha(cap, session, model_name, total, width, height, fps)
+                return
+            elif output_format == "webm":
                 fourcc = cv2.VideoWriter_fourcc(*'VP90')
                 out_file = str(self.output_path)
             elif output_format == "mov":
@@ -1535,6 +2296,7 @@ class VideoRemoveBgWorker(BaseWorker):
             
             frame_idx = 0
             processed = 0
+            start_time = time.time()
             
             logger.info(f"开始处理视频: {total} 帧, {width}x{height}, {fps:.1f}fps")
             
@@ -1577,22 +2339,202 @@ class VideoRemoveBgWorker(BaseWorker):
                 processed += 1
                 
                 if frame_idx % 10 == 0:
-                    self.progress.emit(int(frame_idx / total * 100), f"处理帧 {frame_idx}/{total}")
+                    dur = time.time() - start_time
+                    avg = frame_idx / max(dur, 1e-6)
+                    rem = max(0, total - frame_idx)
+                    eta = rem / max(avg, 1e-6)
+                    m = int(eta // 60)
+                    s = int(eta % 60)
+                    eta_str = f"{m}:{s:02d}"
+                    self.progress.emit(int(frame_idx / total * 100), f"处理帧 {frame_idx}/{total} | {avg:.2f} fps | 剩余 {eta_str}")
                     gc.collect()
             
             cap.release()
             writer.release()
             gc.collect()
             
-            logger.success(f"视频扣像完成: {self.output_path}")
+            dur = round(time.time() - start_time, 2)
+            avg_fps = round(processed / max(dur, 1e-6), 2)
+            self.progress.emit(100, "处理完成")
+            logger.success(f"视频扣像完成: {self.output_path} | 帧数 {processed} | 耗时 {dur}s | 平均 {avg_fps} fps")
             self.finished.emit({
                 "video": str(self.output_path),
                 "frames": processed,
-                "folder": str(self.output_path.parent)
+                "folder": str(self.output_path.parent),
+                "duration": dur,
+                "avg_fps": avg_fps
             })
             
         except Exception as e:
             logger.error(f"视频扣像失败: {e}")
+            traceback.print_exc()
+            self.error.emit(str(e))
+
+    def _save_webm_with_alpha(self, cap, session, model_name, total, width, height, fps):
+        try:
+            import imageio
+            import importlib.util
+            import subprocess
+            use_ffmpeg_plugin = importlib.util.find_spec('imageio_ffmpeg') is not None
+            out_crf = int(self.params.get('crf', 32))
+            out_cpu = int(self.params.get('cpu_used', 6))
+            threads = max(1, (os.cpu_count() or 4))
+            include_audio = bool(self.params.get('include_audio', True))
+            padded_w = width + (width % 2)
+            padded_h = height + (height % 2)
+            speed_text = str(self.params.get('speed_mode', '平衡'))
+            deadline = 'good'
+            tile_cols = '2'
+            if speed_text in ['快速', 'fast']:
+                out_cpu = max(out_cpu, 8)
+                deadline = 'realtime'
+                tile_cols = '2'
+            elif speed_text in ['高质量', 'quality']:
+                out_cpu = min(out_cpu, 4)
+                deadline = 'good'
+                tile_cols = '1'
+            start_time = time.time()
+
+            if use_ffmpeg_plugin and not include_audio:
+                writer = imageio.get_writer(
+                    str(self.output_path),
+                    format='FFMPEG',
+                    fps=fps,
+                    codec='libvpx-vp9',
+                    pixelformat='yuva420p',
+                    output_params=['-b:v','0','-crf',str(out_crf),'-deadline',deadline,'-cpu-used',str(out_cpu),'-row-mt','1','-auto-alt-ref','0','-threads',str(threads),'-tile-columns',tile_cols,'-an'],
+                    macro_block_size=1
+                )
+            else:
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-f', 'rawvideo',
+                    '-vcodec', 'rawvideo',
+                    '-pix_fmt', 'rgba',
+                    '-s', f'{padded_w}x{padded_h}',
+                    '-r', str(fps),
+                    '-i', 'pipe:0',
+                ]
+                if include_audio and getattr(self, 'video_path', None):
+                    cmd += ['-i', str(self.video_path)]
+                cmd += [
+                    '-c:v', 'libvpx-vp9',
+                    '-pix_fmt', 'yuva420p',
+                    '-b:v','0','-crf',str(out_crf),'-deadline',deadline,'-cpu-used',str(out_cpu),'-row-mt','1','-auto-alt-ref','0','-threads',str(threads),'-tile-columns',tile_cols,
+                ]
+                if include_audio:
+                    cmd += ['-map', '0:v:0', '-map', '1:a?', '-c:a', 'libopus', '-b:a', '128k', '-ar', '48000', '-shortest']
+                else:
+                    cmd += ['-an']
+                cmd += [
+                    str(self.output_path)
+                ]
+                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                stderr_lines = []
+                def _drain_stderr(p, buf):
+                    try:
+                        for line in iter(p.stderr.readline, b''):
+                            try:
+                                buf.append(line.decode(errors='ignore'))
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                t_err = threading.Thread(target=_drain_stderr, args=(proc, stderr_lines), daemon=True)
+                t_err.start()
+
+            frame_idx = 0
+
+            while True:
+                if self._stop:
+                    break
+
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pil = Image.fromarray(frame_rgb)
+
+                pil = remove_bg_with_session_smart(pil, session, model_name)
+
+                if self.params.get("cleanup_edge"):
+                    pil = cleanup_edge_pixels(
+                        pil,
+                        self.params.get("edge_feather", 1),
+                        self.params.get("edge_blur", 1),
+                        self.params.get("edge_gamma", 1.2)
+                    )
+
+                if self.params.get("remove_isolated"):
+                    pil = remove_isolated_colors(
+                        pil,
+                        self.params.get("isolated_area", 50),
+                        self.params.get("remove_internal", True),
+                        self.params.get("internal_max_area", 100)
+                    )
+
+                if pil.mode != 'RGBA':
+                    pil = pil.convert('RGBA')
+                if pil.size != (padded_w, padded_h):
+                    bg = Image.new('RGBA', (padded_w, padded_h), (0, 0, 0, 0))
+                    bg.paste(pil, (0, 0))
+                    pil = bg
+
+                if use_ffmpeg_plugin and not include_audio:
+                    writer.append_data(np.array(pil))
+                else:
+                    try:
+                        proc.stdin.write(pil.tobytes('raw', 'RGBA'))
+                    except Exception:
+                        raise
+
+                frame_idx += 1
+
+                if frame_idx % 10 == 0:
+                    dur = time.time() - start_time
+                    avg = frame_idx / max(dur, 1e-6)
+                    rem = max(0, total - frame_idx)
+                    eta = rem / max(avg, 1e-6)
+                    m = int(eta // 60)
+                    s = int(eta % 60)
+                    eta_str = f"{m}:{s:02d}"
+                    self.progress.emit(int(frame_idx / total * 100), f"处理帧 {frame_idx}/{total} | {avg:.2f} fps | 剩余 {eta_str}")
+                    gc.collect()
+
+            cap.release()
+            if use_ffmpeg_plugin and not include_audio:
+                writer.close()
+            else:
+                if proc.stdin:
+                    try:
+                        proc.stdin.close()
+                    except:
+                        pass
+                proc.wait()
+                try:
+                    t_err.join(timeout=2.0)
+                except Exception:
+                    pass
+                if proc.returncode != 0:
+                    err = "\n".join(stderr_lines[-200:]) if stderr_lines else ''
+                    raise RuntimeError(f'ffmpeg 写入失败: {err}')
+            gc.collect()
+
+            dur = round(time.time() - start_time, 2)
+            avg_fps = round(frame_idx / max(dur, 1e-6), 2)
+            self.progress.emit(100, "处理完成")
+            logger.success(f"透明 WebM 视频生成完成: {self.output_path} | 帧数 {frame_idx} | 耗时 {dur}s | 平均 {avg_fps} fps")
+            self.finished.emit({
+                "video": str(self.output_path),
+                "frames": frame_idx,
+                "folder": str(self.output_path.parent),
+                "duration": dur,
+                "avg_fps": avg_fps
+            })
+
+        except Exception as e:
+            logger.error(f"透明 WebM 保存失败: {e}")
             traceback.print_exc()
             self.error.emit(str(e))
 
@@ -1639,6 +2581,26 @@ class SpriteWorker(BaseWorker):
                         frame_count += 1
                         self.progress.emit(int(i/total*30), f"采样 {frame_count}")
                 cap.release()
+            elif self.params.get("source_type") == "sheet":
+                img = Image.open(self.source_path).convert("RGBA")
+                w, h = img.size
+                if self.params.get("auto_detect"):
+                    g = math.gcd(w, h)
+                    rows = max(1, h // g)
+                    cols = max(1, w // g)
+                else:
+                    rows = max(1, int(self.params.get("existing_rows", 1)))
+                    cols = max(1, int(self.params.get("existing_cols", 1)))
+                cell_w = w // cols
+                cell_h = h // rows
+                total_cells = rows * cols
+                for idx in range(total_cells):
+                    if self._stop: break
+                    c = idx % cols
+                    r = idx // cols
+                    box = (c * cell_w, r * cell_h, (c+1) * cell_w, (r+1) * cell_h)
+                    frames_pil.append(img.crop(box))
+                    self.progress.emit(int((idx+1)/total_cells*30), f"切片 {idx+1}/{total_cells}")
             else:
                 files = sorted([f for f in (self.source_path.glob('*') if self.source_path.is_dir() else [self.source_path]) 
                               if f.suffix.lower() in ['.png', '.jpg', '.jpeg', '.bmp']])
@@ -1691,6 +2653,29 @@ class SpriteWorker(BaseWorker):
                 self.error.emit("无有效帧")
                 return
 
+            keep_spec = self.params.get("keep_frames")
+            if keep_spec:
+                def parse_ranges(spec, n):
+                    res = set()
+                    for part in spec.replace('，', ',').split(','):
+                        part = part.strip()
+                        if not part: continue
+                        if '-' in part:
+                            a, b = part.split('-', 1)
+                            try:
+                                s = max(1, int(a)); e = min(n, int(b))
+                                for k in range(s, e+1): res.add(k-1)
+                            except: pass
+                        else:
+                            try:
+                                k = int(part); 
+                                if 1 <= k <= n: res.add(k-1)
+                            except: pass
+                    return sorted(res)
+                idxs = parse_ranges(keep_spec, len(frames))
+                if idxs:
+                    frames = [frames[i] for i in idxs]
+
             fw, fh = frames[0].size
             if self.params.get("scale_mode") == "percent":
                 sc = self.params.get("scale_percent", 100) / 100
@@ -1709,7 +2694,7 @@ class SpriteWorker(BaseWorker):
                 sheet.paste(thumb, (c*tw, r*th), thumb)
                 self.progress.emit(70 + int((idx+1)/len(frames)*30), "合成中...")
             
-            out_name = f"{self.source_path.stem}_sprite_{len(frames)}.png"
+            out_name = f"{self.source_path.stem}_sprite_{len(frames)}{'_bj' if self.params.get('edit_mode') else ''}.png"
             out_path = self.output_dir / out_name
             sheet.save(out_path)
             
@@ -1720,6 +2705,130 @@ class SpriteWorker(BaseWorker):
         except Exception as e:
             logger.error(f"精灵图生成失败: {e}")
             traceback.print_exc()
+            self.error.emit(str(e))
+
+class SpriteWorkerWithEditor(BaseWorker):
+    frames_ready = pyqtSignal(list, str)
+    def __init__(self, source_path: str, output_dir: str, params: dict, parent_window):
+        super().__init__()
+        self.source_path = Path(source_path)
+        self.output_dir = Path(output_dir)
+        self.params = params
+        self.parent_window = parent_window
+    def run(self):
+        try:
+            need_remove_bg = self.params.get("remove_bg") and USE_REMBG
+            model_name = self.params.get("model_name", "isnet-general-use")
+            session = None
+            if need_remove_bg:
+                self.progress.emit(0, f"加载模型 {model_name}...")
+                session = ModelManager.load_model(model_name)
+            frames = []
+            if self.params.get("source_type") == "video":
+                if not HAS_CV2:
+                    self.error.emit("opencv-python 未安装")
+                    return
+                cap = cv2.VideoCapture(str(self.source_path))
+                total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                step = max(1, self.params.get("frame_step", 1))
+                data = []
+                for i in range(0, total, step):
+                    if self._stop: break
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+                    ret, f = cap.read()
+                    if ret:
+                        frame_rgb = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
+                        data.append((len(data), frame_rgb))
+                        self.progress.emit(int(i/total*30), f"采样 {len(data)}")
+                cap.release()
+                if need_remove_bg:
+                    num_workers = min(self.params.get("num_threads", 4), len(data))
+                    results = {}
+                    processed = 0
+                    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                        futures = {executor.submit(process_single_frame, fd, session, self.params, model_name): fd[0] for fd in data}
+                        for future in as_completed(futures):
+                            if self._stop: break
+                            idx, pil, err = future.result()
+                            if not err:
+                                results[idx] = pil
+                            processed += 1
+                            self.progress.emit(30 + int(processed / max(1,len(data)) * 40), f"处理帧 {processed}/{len(data)}")
+                    frames = [results[i] for i in range(len(data)) if i in results]
+                else:
+                    for _, rgb in data:
+                        frames.append(Image.fromarray(rgb).convert("RGBA"))
+            else:
+                files = sorted([f for f in (self.source_path.glob('*') if self.source_path.is_dir() else [self.source_path]) if f.suffix.lower() in ['.png', '.jpg', '.jpeg', '.bmp']])
+                data = []
+                for i, fp in enumerate(files):
+                    if self._stop: break
+                    img = Image.open(fp).convert("RGB")
+                    data.append((i, np.array(img)))
+                    self.progress.emit(int((i+1)/len(files)*30), f"加载 {i+1}/{len(files)}")
+                if need_remove_bg:
+                    num_workers = min(self.params.get("num_threads", 4), len(data))
+                    results = {}
+                    processed = 0
+                    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                        futures = {executor.submit(process_single_frame, fd, session, self.params, model_name): fd[0] for fd in data}
+                        for future in as_completed(futures):
+                            if self._stop: break
+                            idx, pil, err = future.result()
+                            if not err:
+                                results[idx] = pil
+                            processed += 1
+                            self.progress.emit(30 + int(processed / max(1,len(data)) * 40), f"处理帧 {processed}/{len(data)}")
+                    frames = [results[i] for i in range(len(data)) if i in results]
+                else:
+                    for _, arr in data:
+                        frames.append(Image.fromarray(arr).convert("RGBA"))
+            if not frames:
+                self.error.emit("无有效帧")
+                return
+            fw, fh = frames[0].size
+            if self.params.get("scale_mode") == "percent":
+                sc = self.params.get("scale_percent", 100) / 100
+                tw, th = int(fw*sc), int(fh*sc)
+            else:
+                tw, th = int(self.params.get("thumb_w", 256)), int(self.params.get("thumb_h", 256))
+            scaled_frames = [fr.resize((tw, th), Image.Resampling.LANCZOS) for fr in frames]
+            self.progress.emit(95, "准备编辑器...")
+            self.frames_ready.emit(scaled_frames, str(self.source_path))
+        except Exception as e:
+            logger.error(f"精灵图生成失败: {e}")
+            traceback.print_exc()
+            self.error.emit(str(e))
+
+    def _open_editor(self, frames):
+        try:
+            dialog = SpriteEditorDialog(self.parent_window, source_frames=frames)
+            if dialog.exec_() == QDialog.Accepted:
+                selected_frames = dialog.get_selected_frames()
+                output_cols = dialog.get_output_cols()
+                if not selected_frames:
+                    logger.warning("未选择任何帧")
+                    self.finished.emit({"folder": str(self.output_dir)})
+                    return
+                fw, fh = selected_frames[0].size
+                rows = math.ceil(len(selected_frames) / max(1, output_cols))
+                sheet = Image.new("RGBA", (output_cols * fw, rows * fh))
+                for idx, frame in enumerate(selected_frames):
+                    c, r = idx % output_cols, idx // output_cols
+                    if frame.mode != 'RGBA':
+                        frame = frame.convert('RGBA')
+                    sheet.paste(frame, (c * fw, r * fh), frame)
+                out_name = f"{self.source_path.stem}_bj_{len(selected_frames)}.png"
+                out_path = self.output_dir / out_name
+                sheet.save(str(out_path))
+                gc.collect()
+                logger.success(f"编辑精灵图生成完成: {out_path}")
+                self.finished.emit({"sheet": str(out_path), "count": len(selected_frames), "folder": str(self.output_dir)})
+            else:
+                logger.info("用户取消编辑")
+                self.finished.emit({"folder": str(self.output_dir)})
+        except Exception as e:
+            logger.error(f"编辑器错误: {e}")
             self.error.emit(str(e))
 
 class VideoToGifWorker(BaseWorker):
@@ -2022,7 +3131,7 @@ class MainWindow(QWidget):
         gpu_status = f"GPU: {HardwareInfo.gpu_name}" if HardwareInfo.gpu_available else "CPU模式"
         base_title = f"别快视频精灵图 v7.6 [{gpu_status}]"
         self.setWindowTitle(f"{base_title} - {'已激活' if self.activated else f'试用 (15:00)'}")
-        self.resize(1200, 1000)
+        self.setFixedWidth(800)
         self.setAcceptDrops(True)
         
         self.enable_sound = ConfigManager.get("enable_sound", True)
@@ -2055,64 +3164,21 @@ class MainWindow(QWidget):
         gpu_status = f"GPU: {HardwareInfo.gpu_name}" if HardwareInfo.gpu_available else "CPU模式"
         self.setWindowTitle(f"别快视频精灵图 v7.6 [{gpu_status}] - 试用 ({mins:02d}:{secs:02d})")
         
-        # 最后1分钟警告
         if self.trial_total_seconds == 60:
-            logger.warning("⚠ 试用时间仅剩 1 分钟！")
-        
-        # 最后30秒警告
-        if self.trial_total_seconds == 30:
-            logger.warning("⚠ 试用时间仅剩 30 秒！请保存工作。")
+            logger.warning("⚠ 试用时间仅剩 1 分钟！请保存工作。")
         
         # 时间到
         if self.trial_total_seconds <= 0:
             self._handle_trial_expired()
     
     def _handle_trial_expired(self):
-        """【修复】处理试用到期 - 安全退出流程"""
         self.trial_expired = True
-        
-        # 1. 停止定时器
         if hasattr(self, 'trial_timer'):
             self.trial_timer.stop()
-        
-        # 2. 停止当前任务
         self._stop_current_task()
-        
         logger.error("试用时间已到！")
-        
-        # 3. 更新标题
-        gpu_status = f"GPU: {HardwareInfo.gpu_name}" if HardwareInfo.gpu_available else "CPU模式"
-        self.setWindowTitle(f"别快视频精灵图 v7.6 [{gpu_status}] - 试用已到期")
-        
-        # 4. 显示提示对话框
-        msg = QMessageBox(self)
-        msg.setWindowTitle("试用结束")
-        msg.setIcon(QMessageBox.Warning)
-        msg.setText("试用时间已到！")
-        msg.setInformativeText("程序将在 60 秒后自动退出。\n\n请保存您的工作，或点击'立即退出'。\n\n如需继续使用，请购买激活码。")
-        
-        exit_now_btn = msg.addButton("立即退出", QMessageBox.DestructiveRole)
-        activate_btn = msg.addButton("输入激活码", QMessageBox.ActionRole)
-        wait_btn = msg.addButton("等待60秒", QMessageBox.RejectRole)
-        
-        msg.exec_()
-        
-        clicked = msg.clickedButton()
-        
-        if clicked == exit_now_btn:
-            # 立即退出
-            logger.info("用户选择立即退出")
-            QApplication.quit()
-            sys.exit(0)
-        elif clicked == activate_btn:
-            # 尝试激活
-            self._show_activation_dialog()
-            if not self.activated:
-                # 激活失败，启动60秒倒计时
-                self._start_exit_countdown()
-        else:
-            # 等待60秒
-            self._start_exit_countdown()
+        QApplication.quit()
+        sys.exit(0)
     
     def _start_exit_countdown(self):
         """启动60秒退出倒计时"""
@@ -2214,7 +3280,7 @@ class MainWindow(QWidget):
         main.addLayout(status_layout)
 
         # 主内容
-        splitter = QSplitter(Qt.Vertical)
+        self.splitter = QSplitter(Qt.Vertical)
         
         tab_widget = QWidget()
         tab_layout = QVBoxLayout(tab_widget)
@@ -2230,7 +3296,7 @@ class MainWindow(QWidget):
         self.tabs.addTab(self._build_settings_tab(), "设置")
         tab_layout.addWidget(self.tabs)
         
-        splitter.addWidget(tab_widget)
+        self.splitter.addWidget(tab_widget)
         
         # 日志
         log_group = QGroupBox("系统日志")
@@ -2261,12 +3327,144 @@ class MainWindow(QWidget):
         log_layout.addLayout(log_btn_layout)
         
         log_group.setLayout(log_layout)
-        splitter.addWidget(log_group)
+        self.splitter.addWidget(log_group)
         
-        splitter.setSizes([700, 200])
-        main.addWidget(splitter)
+        self.splitter.setSizes([500, 200])
+        main.addWidget(self.splitter)
         
         self.setLayout(main)
+        self._apply_compact_layout()
+        self._adjust_window_size()
+        self.tabs.currentChanged.connect(lambda _: self._adjust_splitter_to_tab())
+
+    def _compact_set_width(self, widget, chars):
+        try:
+            from PyQt5.QtWidgets import QStyle, QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit
+            fm = widget.fontMetrics()
+            txt_w = fm.horizontalAdvance('0' * max(1, int(chars)))
+            extra = 10
+            try:
+                frame_w = widget.style().pixelMetric(QStyle.PM_DefaultFrameWidth, None, widget)
+            except Exception:
+                frame_w = 2
+            if isinstance(widget, QSpinBox):
+                extra += frame_w + 28
+            elif isinstance(widget, QDoubleSpinBox):
+                extra += frame_w + 32
+            elif isinstance(widget, QComboBox):
+                extra += frame_w + 28
+            elif isinstance(widget, QLineEdit):
+                extra += frame_w + 10
+            widget.setMaximumWidth(txt_w + extra)
+        except Exception:
+            pass
+
+    def _apply_compact_layout(self):
+        self._compact_set_width(self.sprite_path_edit, 36)
+        self._compact_set_width(self.extract_path_edit, 36)
+        self._compact_set_width(self.vid_src_edit, 36)
+        self._compact_set_width(self.gif_src_edit, 36)
+        self._compact_set_width(self.single_src_edit, 36)
+        self.sprite_step.setRange(1, 99)
+        self.extract_step.setRange(1, 99)
+        self.gif_step.setRange(1, 99)
+        self._compact_set_width(self.sprite_step, 2)
+        self._compact_set_width(self.extract_step, 2)
+        self._compact_set_width(self.gif_step, 2)
+        self.sprite_scale_val.setRange(0, 100)
+        self._compact_set_width(self.sprite_scale_val, 3)
+        self._compact_set_width(self.sprite_w, 4)
+        self._compact_set_width(self.sprite_h, 4)
+        self._compact_set_width(self.sprite_cols, 2)
+        self._compact_set_width(self.beiou_crf, 2)
+        self._compact_set_width(self.vid_fps, 3)
+        self._compact_set_width(self.gif_fps, 2)
+        self._compact_set_width(self.beiou_format, 18)
+        self._compact_set_width(self.beiou_speed, 6)
+
+        # 紧凑化各栅格布局的间距，减少标签与控件间空白
+        try:
+            # 精灵图设置
+            sl = self._find_layout_of_group("设置")
+            if sl:
+                sl.setContentsMargins(6, 6, 6, 6)
+                sl.setHorizontalSpacing(6)
+                sl.setVerticalSpacing(4)
+                sl.setColumnStretch(0, 0); sl.setColumnStretch(1, 0); sl.setColumnStretch(2, 0); sl.setColumnStretch(3, 1)
+            # 视频转图 - 选项与清理
+            ol = self._find_layout_of_group("提取选项")
+            if ol:
+                ol.setContentsMargins(6, 6, 6, 6)
+                ol.setHorizontalSpacing(6)
+                ol.setVerticalSpacing(4)
+            cl = self._find_layout_of_group("清理选项")
+            if cl:
+                cl.setContentsMargins(6, 6, 6, 6)
+                cl.setHorizontalSpacing(6)
+                cl.setVerticalSpacing(4)
+            # 视频扣像 - 后处理
+            pl = self._find_layout_of_group("后处理选项")
+            if pl:
+                pl.setContentsMargins(6, 6, 6, 6)
+                pl.setHorizontalSpacing(6)
+                pl.setVerticalSpacing(4)
+            # 图片转视频参数
+            iv = self._find_layout_of_group("参数")
+            if iv:
+                iv.setContentsMargins(6, 6, 6, 6)
+                iv.setHorizontalSpacing(6)
+                iv.setVerticalSpacing(4)
+            # GIF 参数与清理
+            gf = self._find_layout_of_group("GIF 参数")
+            if gf:
+                gf.setContentsMargins(6, 6, 6, 6)
+                gf.setHorizontalSpacing(6)
+                gf.setVerticalSpacing(4)
+            gc = self._find_layout_of_group("清理选项")
+            if gc:
+                gc.setContentsMargins(6, 6, 6, 6)
+                gc.setHorizontalSpacing(6)
+                gc.setVerticalSpacing(4)
+            # 单图处理选项
+            so = self._find_layout_of_group("处理选项")
+            if so:
+                so.setContentsMargins(6, 6, 6, 6)
+                so.setHorizontalSpacing(6)
+                so.setVerticalSpacing(4)
+        except Exception:
+            pass
+
+    def _adjust_window_size(self):
+        try:
+            max_h = 0
+            for i in range(self.tabs.count()):
+                w = self.tabs.widget(i)
+                max_h = max(max_h, w.sizeHint().height())
+            logs_min = 160
+            total_h = max_h + logs_min + 120
+            self.setFixedHeight(total_h)
+        except Exception:
+            pass
+
+    def _adjust_splitter_to_tab(self):
+        try:
+            top_h = self.tabs.currentWidget().sizeHint().height()
+            total_h = self.height()
+            logs_h = max(140, total_h - top_h)
+            self.splitter.setSizes([top_h, logs_h])
+        except Exception:
+            pass
+
+    def _find_layout_of_group(self, title):
+        try:
+            # 在当前页中查找指定标题的 QGroupBox 并返回其布局
+            page = self.tabs.currentWidget()
+            for gb in page.findChildren(QGroupBox):
+                if gb.title() == title:
+                    return gb.layout()
+        except Exception:
+            pass
+        return None
     
     def _refresh_all_model_selectors(self):
         """刷新所有模型选择器"""
@@ -2308,12 +3506,15 @@ class MainWindow(QWidget):
         self.sprite_source_type = QButtonGroup(w)
         r1 = QRadioButton("视频"); r1.setChecked(True)
         r2 = QRadioButton("图片文件夹")
+        r3 = QRadioButton("已有精灵图")
         self.sprite_source_type.addButton(r1, 0)
         self.sprite_source_type.addButton(r2, 1)
+        self.sprite_source_type.addButton(r3, 2)
         
         hl = QHBoxLayout()
         hl.addWidget(r1)
         hl.addWidget(r2)
+        hl.addWidget(r3)
         hl.addStretch()
         src_grp.setLayout(QVBoxLayout())
         src_grp.layout().addLayout(hl)
@@ -2332,13 +3533,15 @@ class MainWindow(QWidget):
         self.sprite_threads = self.create_thread_selector()
         ml.addWidget(self.sprite_threads, 0, 4)
         
-        hint = self.create_hint_label("★ = 已加载 | ✓ = 已下载 | ○ = 需下载 | 🔴 = 大模型")
-        ml.addWidget(hint, 1, 0, 1, 5)
+        model_grp.setToolTip("★ = 已加载 | ✓ = 已下载 | ○ = 需下载 | 🔴 = 大模型")
         model_grp.setLayout(ml)
         layout.addWidget(model_grp)
 
         set_grp = QGroupBox("设置")
         sl = QGridLayout()
+        sl.setContentsMargins(6, 6, 6, 6)
+        sl.setHorizontalSpacing(6)
+        sl.setVerticalSpacing(4)
         sl.addWidget(QLabel("帧间隔:"), 0, 0)
         self.sprite_step = QSpinBox()
         self.sprite_step.setRange(1, 1000)
@@ -2353,13 +3556,13 @@ class MainWindow(QWidget):
         self.sprite_percent = QRadioButton("百分比")
         self.sprite_percent.setChecked(True)
         self.sprite_fixed = QRadioButton("固定尺寸")
-        sl.addWidget(self.sprite_percent, 1, 0)
-        sl.addWidget(self.sprite_fixed, 1, 1)
+        sl.addWidget(self.sprite_percent, 0, 4)
+        sl.addWidget(self.sprite_fixed, 0, 5)
         
         self.sprite_scale_val = QDoubleSpinBox()
         self.sprite_scale_val.setValue(100)
         self.sprite_scale_val.setRange(1, 1000)
-        sl.addWidget(self.sprite_scale_val, 1, 2)
+        sl.addWidget(self.sprite_scale_val, 0, 6)
         
         self.sprite_w = QSpinBox()
         self.sprite_w.setValue(256)
@@ -2374,57 +3577,61 @@ class MainWindow(QWidget):
         wh_layout.addWidget(self.sprite_w)
         wh_layout.addWidget(QLabel("x"))
         wh_layout.addWidget(self.sprite_h)
-        sl.addLayout(wh_layout, 1, 3)
+        sl.addLayout(wh_layout, 0, 7)
         
         self.sprite_percent.toggled.connect(lambda c: [self.sprite_w.setEnabled(not c), self.sprite_h.setEnabled(not c), self.sprite_scale_val.setEnabled(c)])
-        
+
         set_grp.setLayout(sl)
         layout.addWidget(set_grp)
         
         bg_grp = QGroupBox("背景移除与清理")
         bl = QGridLayout()
+        bl.setContentsMargins(6, 6, 6, 6)
+        bl.setHorizontalSpacing(6)
+        bl.setVerticalSpacing(4)
         
         self.sprite_rembg = QCheckBox("启用背景移除")
         bl.addWidget(self.sprite_rembg, 0, 0, 1, 2)
+        bl.addItem(QSpacerItem(40, 1, QSizePolicy.Fixed, QSizePolicy.Minimum), 0, 2)
         
         self.sprite_clean = QCheckBox("边缘清理")
         self.sprite_clean.setEnabled(False)
-        bl.addWidget(self.sprite_clean, 1, 0)
-        bl.addWidget(QLabel("腐蚀:"), 1, 1)
+        bl.addWidget(self.sprite_clean, 0, 3)
+        bl.addWidget(QLabel("腐蚀:"), 0, 4)
         self.sprite_feather = QSpinBox()
         self.sprite_feather.setValue(1)
         self.sprite_feather.setRange(0, 10)
-        bl.addWidget(self.sprite_feather, 1, 2)
-        bl.addWidget(QLabel("模糊:"), 1, 3)
+        bl.addWidget(self.sprite_feather, 0, 5)
+        bl.addWidget(QLabel("模糊:"), 0, 6)
         self.sprite_blur = QSpinBox()
         self.sprite_blur.setValue(1)
         self.sprite_blur.setRange(0, 10)
-        bl.addWidget(self.sprite_blur, 1, 4)
-        bl.addWidget(QLabel("Gamma:"), 1, 5)
+        bl.addWidget(self.sprite_blur, 0, 7)
+        bl.addWidget(QLabel("Gamma:"), 0, 8)
         self.sprite_gamma = QDoubleSpinBox()
         self.sprite_gamma.setValue(1.2)
         self.sprite_gamma.setRange(0.5, 2.0)
         self.sprite_gamma.setSingleStep(0.1)
-        bl.addWidget(self.sprite_gamma, 1, 6)
+        bl.addWidget(self.sprite_gamma, 0, 9)
         
         self.sprite_iso = QCheckBox("移除孤立色块")
         self.sprite_iso.setEnabled(False)
-        bl.addWidget(self.sprite_iso, 2, 0, 1, 2)
-        bl.addWidget(QLabel("最小保留:"), 2, 2)
+        bl.addWidget(self.sprite_iso, 1, 0, 1, 2)
+        bl.addWidget(QLabel("最小保留:"), 1, 2)
         self.sprite_iso_area = QSpinBox()
         self.sprite_iso_area.setValue(50)
         self.sprite_iso_area.setRange(1, 50000)
-        bl.addWidget(self.sprite_iso_area, 2, 3)
+        bl.addWidget(self.sprite_iso_area, 1, 3)
         
         self.sprite_internal = QCheckBox("清理内部孔洞")
         self.sprite_internal.setEnabled(False)
         self.sprite_internal.setChecked(True)
-        bl.addWidget(self.sprite_internal, 2, 4, 1, 2)
-        bl.addWidget(QLabel("孔洞最大:"), 2, 6)
+        bl.addWidget(self.sprite_internal, 1, 4, 1, 2)
+        bl.addWidget(QLabel("孔洞最大:"), 1, 6)
         self.sprite_internal_area = QSpinBox()
         self.sprite_internal_area.setValue(100)
         self.sprite_internal_area.setRange(1, 10000)
-        bl.addWidget(self.sprite_internal_area, 3, 0)
+        bl.addWidget(self.sprite_internal_area, 1, 7)
         
         self.sprite_rembg.stateChanged.connect(lambda s: [
             self.sprite_clean.setEnabled(s), 
@@ -2434,6 +3641,21 @@ class MainWindow(QWidget):
         
         bg_grp.setLayout(bl)
         layout.addWidget(bg_grp)
+
+        edit_grp = QGroupBox("编辑模式")
+        el = QVBoxLayout()
+        hdr = QHBoxLayout()
+        self.sprite_edit_mode = QCheckBox("启用编辑模式 (生成后可选择帧)")
+        hdr.addWidget(self.sprite_edit_mode)
+        hdr.addStretch()
+        edit_existing_btn = QPushButton("编辑已有精灵图")
+        edit_existing_btn.clicked.connect(self._edit_existing_sprite)
+        hdr.addWidget(edit_existing_btn)
+        el.addLayout(hdr)
+        edit_hint = self.create_hint_label("启用后，生成精灵图前会打开编辑器，可以选择要保留的帧。输出文件会添加 _bj 后缀。")
+        el.addWidget(edit_hint)
+        edit_grp.setLayout(el)
+        layout.addWidget(edit_grp)
         
         btn = QPushButton("生成精灵图")
         btn.setObjectName("actionButton")
@@ -2451,11 +3673,16 @@ class MainWindow(QWidget):
         
         grp = QGroupBox("视频源")
         l, self.extract_path_edit = self.create_file_input(self.extract_select)
+        l.setContentsMargins(6,6,6,6)
+        l.setSpacing(6)
         grp.setLayout(l)
         layout.addWidget(grp)
         
         model_grp = QGroupBox("AI 模型")
         ml = QGridLayout()
+        ml.setContentsMargins(6,6,6,6)
+        ml.setHorizontalSpacing(6)
+        ml.setVerticalSpacing(4)
         ml.addWidget(QLabel("选择模型:"), 0, 0)
         self.extract_model = ModelSelector()
         self.extract_model.model_changed.connect(self._on_model_changed)
@@ -2557,36 +3784,69 @@ class MainWindow(QWidget):
         
         src_grp = QGroupBox("视频源")
         l, self.beiou_path_edit = self.create_file_input(self.beiou_select)
+        l.setContentsMargins(6,6,6,6)
+        l.setSpacing(6)
         src_grp.setLayout(l)
         layout.addWidget(src_grp)
         
         model_grp = QGroupBox("AI 模型")
         ml = QGridLayout()
+        ml.setContentsMargins(6,6,6,6)
+        ml.setHorizontalSpacing(6)
+        ml.setVerticalSpacing(4)
         ml.addWidget(QLabel("选择模型:"), 0, 0)
         self.beiou_model = ModelSelector()
         self.beiou_model.model_changed.connect(self._on_model_changed)
         ml.addWidget(self.beiou_model, 0, 1, 1, 2)
-        
-        hint = self.create_hint_label("建议使用 ISNet 或 U²-Net 系列模型")
-        ml.addWidget(hint, 1, 0, 1, 3)
+        ml.addWidget(QLabel("并行线程:"), 0, 3)
+        self.beiou_threads = self.create_thread_selector()
+        ml.addWidget(self.beiou_threads, 0, 4)
+        model_grp.setToolTip("建议使用 ISNet 或 U²-Net 系列模型")
         model_grp.setLayout(ml)
         layout.addWidget(model_grp)
         
         out_grp = QGroupBox("输出设置")
         ol = QGridLayout()
+        ol.setContentsMargins(8, 8, 8, 8)
+        ol.setHorizontalSpacing(8)
+        ol.setVerticalSpacing(6)
         
         ol.addWidget(QLabel("输出格式:"), 0, 0)
         self.beiou_format = QComboBox()
-        self.beiou_format.addItems(["mp4 (绿幕/自定义背景)", "avi", "webm"])
+        self.beiou_format.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.beiou_format.setMinimumContentsLength(12)
+        self.beiou_format.addItems(["mp4 (绿幕/自定义背景)", "avi", "webm (绿幕)", "webm (透明通道)"])
         ol.addWidget(self.beiou_format, 0, 1)
         
         # 【修复】使用颜色选择器
         ol.addWidget(QLabel("背景色:"), 0, 2)
-        self.beiou_bg_color = ColorPickerWidget("#00FF00")  # 默认绿幕
+        self.beiou_bg_color = ColorPickerWidget("#00FF00")
+        self.beiou_bg_color.setMaximumWidth(180)
         ol.addWidget(self.beiou_bg_color, 0, 3)
-        
-        format_hint = self.create_hint_label("视频输出需要填充背景色（默认绿幕），后期可用视频软件抠除")
-        ol.addWidget(format_hint, 1, 0, 1, 4)
+        self.beiou_preserve_alpha = QCheckBox("保留透明通道 (仅WebM)")
+        self.beiou_preserve_alpha.setEnabled(False)
+        ol.addWidget(self.beiou_preserve_alpha, 1, 0, 1, 2)
+        ol.addWidget(QLabel("质量(CRF):"), 1, 2)
+        self.beiou_crf = QSpinBox()
+        self.beiou_crf.setRange(12, 40)
+        self.beiou_crf.setValue(28)
+        ol.addWidget(self.beiou_crf, 1, 3)
+        ol.addWidget(QLabel("速度模式:"), 2, 0)
+        self.beiou_speed = QComboBox()
+        self.beiou_speed.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.beiou_speed.addItems(["快速", "平衡", "高质量"])
+        self.beiou_speed.setCurrentIndex(1)
+        ol.addWidget(self.beiou_speed, 2, 1)
+        self.beiou_audio = QCheckBox("包含音频 (透明WebM)")
+        self.beiou_audio.setEnabled(False)
+        self.beiou_audio.setChecked(True)
+        ol.addWidget(self.beiou_audio, 2, 2, 1, 2)
+        self.beiou_format.currentIndexChanged.connect(self._on_beiou_format_changed)
+        format_hint = self.create_hint_label("选择'webm (透明通道)'可保存带Alpha通道的视频，适合后期合成")
+        ol.addWidget(format_hint, 4, 0, 1, 4)
+
+        ol.setColumnStretch(1, 1)
+        ol.setColumnStretch(3, 1)
         
         out_grp.setLayout(ol)
         layout.addWidget(out_grp)
@@ -2707,6 +3967,9 @@ class MainWindow(QWidget):
         
         model_grp = QGroupBox("AI 模型")
         ml = QGridLayout()
+        ml.setContentsMargins(6,6,6,6)
+        ml.setHorizontalSpacing(6)
+        ml.setVerticalSpacing(4)
         ml.addWidget(QLabel("选择模型:"), 0, 0)
         self.gif_model = ModelSelector()
         self.gif_model.model_changed.connect(self._on_model_changed)
@@ -2719,15 +3982,16 @@ class MainWindow(QWidget):
         
         opt = QGroupBox("GIF 参数")
         ol = QGridLayout()
-        ol.addWidget(QLabel("FPS:"), 0, 0)
-        self.gif_fps = QSpinBox()
-        self.gif_fps.setValue(10)
-        self.gif_fps.setRange(1, 60)
+        ol.setContentsMargins(6,6,6,6)
+        ol.setHorizontalSpacing(3)
+        ol.setVerticalSpacing(2)
+        fps_l = QLabel("FPS:")
+        ol.addWidget(fps_l, 0, 0)
+        self.gif_fps = QSpinBox(); self.gif_fps.setValue(10); self.gif_fps.setRange(1, 60)
         ol.addWidget(self.gif_fps, 0, 1)
-        ol.addWidget(QLabel("间隔:"), 0, 2)
-        self.gif_step = QSpinBox()
-        self.gif_step.setRange(1, 1000)
-        self.gif_step.setValue(1)
+        step_l = QLabel("间隔:")
+        ol.addWidget(step_l, 0, 2)
+        self.gif_step = QSpinBox(); self.gif_step.setRange(1, 1000); self.gif_step.setValue(1)
         ol.addWidget(self.gif_step, 0, 3)
         
         self.gif_transparency = QCheckBox("保留透明通道")
@@ -2810,12 +4074,17 @@ class MainWindow(QWidget):
         layout.addWidget(grp)
         
         model_grp = QGroupBox("AI 模型")
-        ml = QHBoxLayout()
-        ml.addWidget(QLabel("选择模型:"))
+        ml = QGridLayout()
+        ml.setContentsMargins(6,6,6,6)
+        ml.setHorizontalSpacing(6)
+        ml.setVerticalSpacing(4)
+        ml.addWidget(QLabel("选择模型:"), 0, 0)
         self.single_model = ModelSelector()
         self.single_model.model_changed.connect(self._on_model_changed)
-        ml.addWidget(self.single_model)
-        ml.addStretch()
+        ml.addWidget(self.single_model, 0, 1, 1, 2)
+        ml.addWidget(QLabel("并行线程:"), 0, 3)
+        self.single_threads = self.create_thread_selector()
+        ml.addWidget(self.single_threads, 0, 4)
         model_grp.setLayout(ml)
         layout.addWidget(model_grp)
         
@@ -2903,18 +4172,26 @@ class MainWindow(QWidget):
         
         hw_grp = QGroupBox("硬件信息")
         hl = QGridLayout()
+        hl.setContentsMargins(6,6,6,6)
+        hl.setHorizontalSpacing(8)
+        hl.setVerticalSpacing(4)
+        # 第一行：GPU 与 显存
         hl.addWidget(QLabel("GPU:"), 0, 0)
         hl.addWidget(QLabel(f"{'✓ ' + HardwareInfo.gpu_name if HardwareInfo.gpu_available else '○ 未检测到'}"), 0, 1)
-        hl.addWidget(QLabel("GPU 显存:"), 1, 0)
-        hl.addWidget(QLabel(f"{HardwareInfo.gpu_memory_mb} MB" if HardwareInfo.gpu_available else "N/A"), 1, 1)
-        hl.addWidget(QLabel("ONNX 提供程序:"), 2, 0)
-        hl.addWidget(QLabel(", ".join(HardwareInfo.onnx_providers) if HardwareInfo.onnx_providers else "N/A"), 2, 1)
-        hl.addWidget(QLabel("CPU 线程:"), 3, 0)
-        hl.addWidget(QLabel(str(HardwareInfo.cpu_threads)), 3, 1)
-        hl.addWidget(QLabel("可用内存:"), 4, 0)
-        hl.addWidget(QLabel(f"{HardwareInfo.available_memory_mb} MB"), 4, 1)
-        hl.addWidget(QLabel("rembg:"), 5, 0)
-        hl.addWidget(QLabel(f"{'✓ 已安装' if USE_REMBG else '✗ 未安装'}"), 5, 1)
+        hl.addWidget(QLabel("GPU 显存:"), 0, 2)
+        hl.addWidget(QLabel(f"{HardwareInfo.gpu_memory_mb} MB" if HardwareInfo.gpu_available else "N/A"), 0, 3)
+        # 第二行：CPU 与 内存
+        hl.addWidget(QLabel("CPU 线程:"), 1, 0)
+        hl.addWidget(QLabel(str(HardwareInfo.cpu_threads)), 1, 1)
+        hl.addWidget(QLabel("可用内存:"), 1, 2)
+        hl.addWidget(QLabel(f"{HardwareInfo.available_memory_mb} MB"), 1, 3)
+        # 第三行：rembg
+        hl.addWidget(QLabel("rembg:"), 2, 0)
+        hl.addWidget(QLabel(f"{'✓ 已安装' if USE_REMBG else '✗ 未安装'}"), 2, 1)
+        # 第四行：ONNX 提供程序（独占一行）
+        hl.addWidget(QLabel("ONNX 提供程序:"), 3, 0)
+        val = QLabel(", ".join(HardwareInfo.onnx_providers) if HardwareInfo.onnx_providers else "N/A")
+        hl.addWidget(val, 3, 1, 1, 3)
         hw_grp.setLayout(hl)
         layout.addWidget(hw_grp)
         
@@ -2957,7 +4234,13 @@ class MainWindow(QWidget):
         return w
 
     def sprite_select_source(self): 
-        self._select_file(self.sprite_path_edit, file_mode=self.sprite_source_type.checkedId()==0)
+        sid = self.sprite_source_type.checkedId()
+        if sid == 0:
+            self._select_file(self.sprite_path_edit, file_mode=True, filter="Video (*.mp4 *.avi *.mov *.mkv *.webm)")
+        elif sid == 1:
+            self._select_file(self.sprite_path_edit, file_mode=False)
+        else:
+            self._select_file(self.sprite_path_edit, file_mode=True, filter="PNG 图片 (*.png)")
     def extract_select(self): 
         self._select_file(self.extract_path_edit, file_mode=True)
     def vid_select(self): 
@@ -2977,33 +4260,55 @@ class MainWindow(QWidget):
         if f: 
             edit_widget.setText(f)
 
-    def show_result_dialog(self, folder_path):
-        if self.enable_sound: 
+    def show_result_dialog(self, result):
+        if isinstance(result, dict):
+            folder_path = result.get('folder')
+            video_path = result.get('video')
+            frames = result.get('frames')
+            duration = result.get('duration')
+            avg_fps = result.get('avg_fps')
+        else:
+            folder_path = result
+            video_path = None
+            frames = None
+            duration = None
+            avg_fps = None
+        if self.enable_sound:
             play_completion_sound()
         msg = QMessageBox(self)
         msg.setWindowTitle("任务完成")
-        msg.setText("处理已完成！")
+        if video_path or frames or duration is not None or avg_fps is not None:
+            parts = []
+            if video_path:
+                parts.append(f"输出: {Path(video_path).name}")
+            if isinstance(frames, int):
+                parts.append(f"帧数: {frames}")
+            if isinstance(duration, (int, float)):
+                parts.append(f"耗时: {duration}s")
+            if isinstance(avg_fps, (int, float)):
+                parts.append(f"速度: {avg_fps} fps")
+            msg.setText("处理已完成！\n" + "\n".join(parts))
+        else:
+            msg.setText("处理已完成！")
         msg.setIcon(QMessageBox.Information)
-        
         open_btn = msg.addButton("打开文件夹", QMessageBox.ActionRole)
         msg.addButton("关闭", QMessageBox.RejectRole)
         msg.exec_()
-        
-        if msg.clickedButton() == open_btn:
+        if msg.clickedButton() == open_btn and folder_path:
             try:
                 os.startfile(folder_path)
             except:
-                try: 
+                try:
                     subprocess.Popen(['xdg-open', folder_path])
-                except: 
+                except:
                     pass
 
     def sprite_run(self):
         path = self.sprite_path_edit.text()
-        if not path: 
+        if not path:
             logger.warning("请先选择源文件")
             return
-        
+        edit_mode = self.sprite_edit_mode.isChecked()
         params = {
             "source_type": "video" if self.sprite_source_type.checkedId()==0 else "images",
             "model_name": self.sprite_model.get_current_model(),
@@ -3012,28 +4317,163 @@ class MainWindow(QWidget):
             "columns": max(1, self.sprite_cols.value()),
             "scale_mode": "percent" if self.sprite_percent.isChecked() else "fixed",
             "scale_percent": self.sprite_scale_val.value(),
-            "thumb_w": self.sprite_w.value(), 
+            "thumb_w": self.sprite_w.value(),
             "thumb_h": self.sprite_h.value(),
             "remove_bg": self.sprite_rembg.isChecked(),
             "cleanup_edge": self.sprite_clean.isChecked(),
-            "edge_feather": self.sprite_feather.value(), 
+            "edge_feather": self.sprite_feather.value(),
             "edge_blur": self.sprite_blur.value(),
             "edge_gamma": self.sprite_gamma.value(),
             "remove_isolated": self.sprite_iso.isChecked(),
             "isolated_area": self.sprite_iso_area.value(),
             "remove_internal": self.sprite_internal.isChecked(),
             "internal_max_area": self.sprite_internal_area.value(),
+            "edit_mode": edit_mode,
         }
-        
         logger.info(f"开始生成精灵图: {path}")
-        
         out = Path(ConfigManager.get_output_path("sprite"))
         out.mkdir(parents=True, exist_ok=True)
-        self.current_worker = SpriteWorker(path, str(out), params)
+        if edit_mode:
+            self.current_worker = SpriteWorkerWithEditor(path, str(out), params, self)
+        else:
+            self.current_worker = SpriteWorker(path, str(out), params)
         self.current_worker.progress.connect(lambda v, m: [self.sprite_prog.setValue(v), self.sprite_prog.setFormat(m)])
+        if edit_mode and hasattr(self.current_worker, 'frames_ready'):
+            self.current_worker.frames_ready.connect(self._on_sprite_frames_ready)
         self.current_worker.error.connect(lambda e: logger.error(e))
-        self.current_worker.finished.connect(lambda d: self.show_result_dialog(d['folder']))
+        self.current_worker.finished.connect(lambda d: self.show_result_dialog(d))
         self.current_worker.start()
+
+    def sprite_preview(self):
+        path = self.sprite_path_edit.text()
+        if not path:
+            return
+        stype = "video" if self.sprite_source_type.checkedId()==0 else ("images" if self.sprite_source_type.checkedId()==1 else "sheet")
+        frames = []
+        try:
+            if stype == "video" and HAS_CV2:
+                cap = cv2.VideoCapture(str(path))
+                total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                step = max(1, self.sprite_step.value())
+                count = 0
+                for i in range(0, total, step):
+                    if count >= 50: break
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+                    ret, f = cap.read()
+                    if not ret: break
+                    frame_rgb = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
+                    frames.append(Image.fromarray(frame_rgb).convert('RGBA'))
+                    count += 1
+                cap.release()
+            elif stype == "images":
+                files = sorted([f for f in (Path(path).glob('*') if Path(path).is_dir() else [Path(path)]) if f.suffix.lower() in ['.png','.jpg','.jpeg','.bmp']])
+                for i, fp in enumerate(files[:50]):
+                    img = Image.open(fp).convert('RGBA')
+                    frames.append(img)
+            else:
+                img = Image.open(path).convert('RGBA')
+                w, h = img.size
+                rows = max(1, int(self.sprite_rows.value()))
+                cols = max(1, int(self.sprite_cols_existing.value()))
+                cell_w = w // cols
+                cell_h = h // rows
+                total_cells = rows * cols
+                for idx in range(min(total_cells, 200)):
+                    c = idx % cols
+                    r = idx // cols
+                    box = (c*cell_w, r*cell_h, (c+1)*cell_w, (r+1)*cell_h)
+                    frames.append(img.crop(box))
+            spec = self.sprite_keep_frames.text()
+            if spec:
+                def parse_ranges(spec, n):
+                    res = set()
+                    for part in spec.replace('，', ',').split(','):
+                        part = part.strip()
+                        if not part: continue
+                        if '-' in part:
+                            a, b = part.split('-', 1)
+                            try:
+                                s = max(1, int(a)); e = min(n, int(b))
+                                for k in range(s, e+1): res.add(k-1)
+                            except: pass
+                        else:
+                            try:
+                                k = int(part);
+                                if 1 <= k <= n: res.add(k-1)
+                            except: pass
+                    return sorted(res)
+                idxs = parse_ranges(spec, len(frames))
+                if idxs:
+                    frames = [frames[i] for i in idxs]
+            dlg = SpritePreviewDialog(frames, fps=12, parent=self)
+            dlg.exec_()
+        except Exception:
+            pass
+
+    def _on_sprite_frames_ready(self, frames, source_path):
+        try:
+            if self.current_worker:
+                self.current_worker._open_editor(frames)
+        except Exception as e:
+            logger.error(str(e))
+
+    def _edit_existing_sprite(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "选择精灵图", "", "PNG 图片 (*.png)")
+        if not file_path:
+            return
+        try:
+            dialog = SpriteEditorDialog(self, source_sprite_path=file_path)
+            if dialog.exec_() == QDialog.Accepted:
+                selected_frames = dialog.get_selected_frames()
+                output_cols = dialog.get_output_cols()
+                if not selected_frames:
+                    QMessageBox.warning(self, "提示", "请至少选择一帧")
+                    return
+                    
+                self._generate_sprite_from_frames(selected_frames, output_cols, file_path)
+        except Exception as e:
+            logger.error(f"编辑精灵图失败: {e}")
+            traceback.print_exc()
+            QMessageBox.critical(self, "错误", f"编辑失败: {e}")
+
+    def _generate_sprite_from_frames(self, frames, cols, source_path=None):
+        if not frames:
+            return
+        try:
+            fw, fh = frames[0].size
+            rows = math.ceil(len(frames) / max(1, cols))
+            sheet = Image.new("RGBA", (cols * fw, rows * fh))
+            for idx, frame in enumerate(frames):
+                c, r = idx % cols, idx // cols
+                if frame.mode != 'RGBA':
+                    frame = frame.convert('RGBA')
+                sheet.paste(frame, (c * fw, r * fh), frame)
+            out_dir = Path(ConfigManager.get_output_path("sprite"))
+            out_dir.mkdir(parents=True, exist_ok=True)
+            if source_path:
+                base_name = Path(source_path).stem
+                if base_name.endswith('_bj'):
+                    base_name = base_name[:-3]
+                out_name = f"{base_name}_bj_{len(frames)}.png"
+            else:
+                out_name = f"sprite_bj_{len(frames)}_{datetime.now():%H%M%S}.png"
+            out_path = out_dir / out_name
+            sheet.save(str(out_path))
+            logger.success(f"编辑精灵图生成完成: {out_path}")
+            self.show_result_dialog(str(out_dir))
+        except Exception as e:
+            logger.error(f"生成精灵图失败: {e}")
+            QMessageBox.critical(self, "错误", f"生成失败: {e}")
+
+    def _on_beiou_format_changed(self, index):
+        format_text = self.beiou_format.currentText()
+        is_webm_alpha = "透明通道" in format_text
+        self.beiou_preserve_alpha.setEnabled(is_webm_alpha)
+        self.beiou_preserve_alpha.setChecked(is_webm_alpha)
+        self.beiou_bg_color.setEnabled(not is_webm_alpha)
+        self.beiou_audio.setEnabled(is_webm_alpha)
+        self.beiou_audio.setChecked(is_webm_alpha)
+        self.beiou_speed.setEnabled(is_webm_alpha)
 
     def extract_run(self):
         path = self.extract_path_edit.text()
@@ -3077,6 +4517,7 @@ class MainWindow(QWidget):
             return
         
         format_text = self.beiou_format.currentText()
+        preserve_alpha = "透明通道" in format_text
         if "mp4" in format_text:
             output_format = "mp4"
             ext = ".mp4"
@@ -3090,7 +4531,11 @@ class MainWindow(QWidget):
         params = {
             "model_name": self.beiou_model.get_current_model(),
             "output_format": output_format,
-            "bg_color": self.beiou_bg_color.get_color(),  # 【修复】使用颜色选择器
+            "preserve_alpha": preserve_alpha,
+            "crf": self.beiou_crf.value(),
+            "include_audio": self.beiou_audio.isChecked(),
+            "speed_mode": self.beiou_speed.currentText(),
+            "bg_color": self.beiou_bg_color.get_color(),
             "cleanup_edge": self.beiou_clean.isChecked(),
             "edge_feather": self.beiou_feather.value(),
             "edge_blur": self.beiou_blur.value(),
@@ -3210,14 +4655,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     
-    if DependencyChecker.has_critical_missing():
-        msg = QMessageBox()
-        msg.setIcon(QMessageBox.Critical)
-        msg.setWindowTitle("缺少必要依赖")
-        msg.setText("程序缺少必要的依赖库，请先安装：")
-        msg.setDetailedText(f"安装命令:\n{DependencyChecker.get_install_command()}\n\n完整安装:\n{DependencyChecker.get_full_install_command()}")
-        msg.exec_()
-        sys.exit(1)
+    pass
     
     w = MainWindow()
     w.show()
