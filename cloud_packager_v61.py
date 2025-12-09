@@ -5,25 +5,57 @@
 
 修复内容：
 1. 使用 .spec 文件代替超长命令行（解决 WinError 206）
-2. 限制隐藏导入数量，使用 collect-submodules 代替
-3. 修复中文文件名编码问题
+2. 强制 UTF-8 输出（解决中文编码问题）
+3. 限制隐藏导入数量，使用 collect-submodules 代替
 4. 优化大型库（torch/onnxruntime/cv2）的处理
-
-作者：基于 u788990@160.com 的项目改进
 """
 
-import os
+# ==================== 强制 UTF-8 编码（必须在最开始）====================
 import sys
+import os
+
+# 设置环境变量
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+os.environ['PYTHONUTF8'] = '1'
+
+# 强制重新配置 stdout/stderr 为 UTF-8
+if sys.platform == 'win32':
+    try:
+        # Windows: 尝试设置控制台代码页为 UTF-8
+        import subprocess
+        subprocess.run(['chcp', '65001'], shell=True, capture_output=True)
+    except:
+        pass
+    
+    # 重新包装 stdout/stderr
+    try:
+        import io
+        if hasattr(sys.stdout, 'buffer'):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+        if hasattr(sys.stderr, 'buffer'):
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    except:
+        pass
+
+# ==================== 其余导入 ====================
 import ast
 import re
-import subprocess
 import time
 import glob
-import json
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Set, Dict, List, Tuple, Optional
+
+
+def safe_print(msg: str):
+    """安全打印（处理编码问题）"""
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        # 如果还是失败，转换为 ASCII 安全格式
+        ascii_msg = msg.encode('ascii', errors='replace').decode('ascii')
+        print(ascii_msg, flush=True)
 
 
 class UniversalCloudPackager:
@@ -90,7 +122,7 @@ class UniversalCloudPackager:
         'transformers', 'diffusers',
         'rembg', 'imageio',
         'PyQt5', 'PyQt6', 'PySide2', 'PySide6',
-        'wx', 'kivy',
+        'wx', 'kivy', 'psutil',
     }
     
     # 排除的模块
@@ -142,13 +174,10 @@ class UniversalCloudPackager:
         self._hidden_imports: Set[str] = set()
     
     def log(self, msg: str, level: str = "INFO"):
-        """输出日志"""
+        """输出日志（安全处理编码）"""
         prefix = {"INFO": "[Pack]", "WARN": "[WARN]", "ERROR": "[ERR]", "DEBUG": "[DBG]"}
-        # 确保能输出中文
-        try:
-            print(f"{prefix.get(level, '[Pack]')} {msg}", flush=True)
-        except UnicodeEncodeError:
-            print(f"{prefix.get(level, '[Pack]')} {msg.encode('utf-8', errors='replace').decode()}", flush=True)
+        full_msg = f"{prefix.get(level, '[Pack]')} {msg}"
+        safe_print(full_msg)
     
     # ==================== 图标处理 ====================
     
@@ -169,7 +198,7 @@ class UniversalCloudPackager:
         if icon_path.lower().endswith('.png'):
             try:
                 from PIL import Image
-                self.log(f"Converting PNG to ICO: {icon_path}")
+                self.log(f"Converting PNG to ICO")
                 
                 img = Image.open(icon_path)
                 if img.mode != 'RGBA':
@@ -199,6 +228,7 @@ class UniversalCloudPackager:
             try:
                 with open(self.source, 'r', encoding=enc) as f:
                     original_code = f.read()
+                self.log(f"Read source with encoding: {enc}")
                 break
             except (UnicodeDecodeError, UnicodeError):
                 continue
@@ -214,7 +244,7 @@ class UniversalCloudPackager:
         cleanup_code = ''
         if self.mode == 'onefile' and self.cleanup_temp:
             cleanup_code = '''
-# ==================== 临时文件夹清理 ====================
+# ==================== Temp cleanup ====================
 import sys, os, atexit, shutil, time
 
 def _cleanup_meipass():
@@ -230,7 +260,7 @@ if hasattr(sys, '_MEIPASS'):
         
         # 图标设置代码（简化版）
         icon_code = f'''
-# ==================== 图标设置 ====================
+# ==================== Icon setup ====================
 import sys, os
 
 _WINDOW_ICON = "{window_icon_name}"
@@ -245,7 +275,7 @@ def _get_resource_path(filename):
         if os.path.exists(p): return os.path.abspath(p)
     return None
 
-# Windows 任务栏
+# Windows taskbar
 if sys.platform == 'win32':
     try:
         import ctypes
@@ -282,12 +312,12 @@ try:
     pygame.init = _new_pg
 except: pass
 
-# ==================== 原始代码 ====================
+# ==================== Original code ====================
 '''
         
         wrapper_code = cleanup_code + icon_code + '\n' + original_code
         
-        # 使用唯一文件名避免冲突
+        # 使用唯一文件名避免冲突（避免中文路径）
         wrapper_file = os.path.join(tempfile.gettempdir(), f"wrapper_{self.name}_{int(time.time())}.py")
         with open(wrapper_file, 'w', encoding='utf-8') as f:
             f.write(wrapper_code)
@@ -326,7 +356,7 @@ except: pass
                     if node.module:
                         imports.add(node.module.split('.')[0])
         except SyntaxError as e:
-            self.log(f"Syntax error: {e}", "WARN")
+            self.log(f"Syntax error in source: {e}", "WARN")
         
         # 正则备份
         for pat in [r'^import\s+([\w]+)', r'^from\s+([\w]+)']:
@@ -342,7 +372,7 @@ except: pass
     def prepare_dependencies(self) -> Tuple[Set[str], Set[str]]:
         """准备依赖（使用 collect_submodules 策略）"""
         imports = self.analyze_imports()
-        self.log(f"Found imports: {', '.join(sorted(imports))}")
+        self.log(f"Found {len(imports)} imports: {', '.join(sorted(imports)[:15])}...")
         
         # 大型库使用 collect_submodules
         collect = set()
@@ -372,7 +402,7 @@ except: pass
             collect.add('onnxruntime')
         if 'rembg' in imports:
             collect.add('rembg')
-            collect.add('pooch')  # rembg 依赖
+            collect.add('pooch')  # rembg dependency
         
         self._collect_packages = collect
         self._hidden_imports = hidden
@@ -547,8 +577,8 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 {exe_section}
 """
         
-        # 写入 spec 文件
-        spec_path = os.path.join(tempfile.gettempdir(), f"{self.name}.spec")
+        # 写入 spec 文件（放在当前目录，避免中文路径问题）
+        spec_path = f"{self.name}.spec"
         with open(spec_path, 'w', encoding='utf-8') as f:
             f.write(spec_content)
         
@@ -566,15 +596,17 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
         self.log("=" * 60)
         self.log("Universal Cloud Packager v6.2 (Spec File Mode)")
         self.log("=" * 60)
-        self.log(f"Source: {self.source}")
+        # 使用 repr 避免中文编码问题
+        self.log(f"Source: {repr(self.source)}")
         self.log(f"Output: {self.name}")
         self.log(f"Mode: {self.mode}")
+        self.log(f"No Console: {self.noconsole}")
         self.log(f"EXE Icon: {self.exe_icon or 'None'}")
         self.log(f"Window Icon: {self.window_icon or 'None'}")
         self.log("=" * 60)
         
         if not os.path.exists(self.source):
-            self.log(f"Source not found: {self.source}", "ERROR")
+            self.log(f"Source not found!", "ERROR")
             return 1
         
         try:
@@ -587,9 +619,9 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
             # 创建包装器
             wrapper_source = self.source
             if self.window_icon or self.taskbar_icon or (self.mode == 'onefile' and self.cleanup_temp):
-                wrapper_source = self.create_icon_wrapper()
-                if wrapper_source is None:
-                    wrapper_source = self.source
+                wrapper_result = self.create_icon_wrapper()
+                if wrapper_result:
+                    wrapper_source = wrapper_result
             
             # 检测依赖
             hidden, collect = self.prepare_dependencies()
@@ -602,9 +634,10 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
             spec_path = self.generate_spec_file(wrapper_source, hidden, collect, data, ico_path)
             
             # 执行 PyInstaller（使用 spec 文件）
+            import subprocess
             cmd = [self.python, '-m', 'PyInstaller', '--clean', '--noconfirm', spec_path]
             
-            self.log(f"Running: {' '.join(cmd[:5])}...")
+            self.log(f"Running PyInstaller with spec file...")
             self.log("-" * 60)
             
             # 使用 UTF-8 编码运行
@@ -617,12 +650,15 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 env=env,
-                encoding='utf-8',
-                errors='replace'
             )
             
+            # 读取输出（处理编码）
             for line in proc.stdout:
-                print(f"[PYI] {line.rstrip()}", flush=True)
+                try:
+                    decoded = line.decode('utf-8', errors='replace').rstrip()
+                except:
+                    decoded = str(line)
+                safe_print(f"[PYI] {decoded}")
             
             proc.wait()
             
@@ -671,6 +707,7 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
     
     def install_requirements(self):
         """安装依赖"""
+        import subprocess
         for req in ['requirements.txt', 'requirements-build.txt']:
             path = os.path.join(self.source_dir, req)
             if not os.path.exists(path):
