@@ -1,4 +1,4 @@
-name: Build EXE v6.1 (Universal + Icons)
+name: Build EXE v6.2 (Fixed Icons)
 
 on:
   workflow_dispatch:
@@ -32,16 +32,19 @@ on:
       exe_icon:
         description: 'EXE icon file (e.g. 480x480.png)'
         required: false
+        default: ''
         type: string
       
       window_icon:
         description: 'Window icon (e.g. 28x28.png)'
         required: false
+        default: ''
         type: string
       
       taskbar_icon:
         description: 'Taskbar icon (e.g. 108x108.png)'
         required: false
+        default: ''
         type: string
       
       python_version:
@@ -88,44 +91,82 @@ jobs:
         pip list
       shell: pwsh
     
-    - name: Build with Universal Packager v6.1
+    - name: Build with Universal Packager v6.2
       run: |
-        # 构建参数
-        $args = @(
-          "--source", "${{ inputs.source_file }}",
-          "--name", "${{ inputs.output_name }}",
-          "--mode", "${{ inputs.pack_mode }}"
-        )
+        # 使用不同的变量名避免与 PowerShell 内置 $args 冲突
+        $packArgs = [System.Collections.ArrayList]@()
         
+        # 必需参数
+        [void]$packArgs.Add("--source")
+        [void]$packArgs.Add("${{ inputs.source_file }}")
+        [void]$packArgs.Add("--name")
+        [void]$packArgs.Add("${{ inputs.output_name }}")
+        [void]$packArgs.Add("--mode")
+        [void]$packArgs.Add("${{ inputs.pack_mode }}")
+        
+        # 隐藏控制台
         if ("${{ inputs.no_console }}" -eq "true") {
-          $args += "--noconsole"
+          [void]$packArgs.Add("--noconsole")
         }
         
-        if ("${{ inputs.exe_icon }}" -ne "") {
-          $args += @("--exe-icon", "${{ inputs.exe_icon }}")
+        # EXE 图标
+        $exeIcon = "${{ inputs.exe_icon }}".Trim()
+        if ($exeIcon -ne "" -and $exeIcon -ne "null") {
+          if (Test-Path $exeIcon) {
+            Write-Host "Found EXE icon: $exeIcon"
+            [void]$packArgs.Add("--exe-icon")
+            [void]$packArgs.Add($exeIcon)
+          } else {
+            Write-Host "WARNING: EXE icon not found: $exeIcon"
+          }
         }
         
-        if ("${{ inputs.window_icon }}" -ne "") {
-          $args += @("--window-icon", "${{ inputs.window_icon }}")
+        # 窗口图标
+        $windowIcon = "${{ inputs.window_icon }}".Trim()
+        if ($windowIcon -ne "" -and $windowIcon -ne "null") {
+          if (Test-Path $windowIcon) {
+            Write-Host "Found Window icon: $windowIcon"
+            [void]$packArgs.Add("--window-icon")
+            [void]$packArgs.Add($windowIcon)
+          } else {
+            Write-Host "WARNING: Window icon not found: $windowIcon"
+          }
         }
         
-        if ("${{ inputs.taskbar_icon }}" -ne "") {
-          $args += @("--taskbar-icon", "${{ inputs.taskbar_icon }}")
+        # 任务栏图标
+        $taskbarIcon = "${{ inputs.taskbar_icon }}".Trim()
+        if ($taskbarIcon -ne "" -and $taskbarIcon -ne "null") {
+          if (Test-Path $taskbarIcon) {
+            Write-Host "Found Taskbar icon: $taskbarIcon"
+            [void]$packArgs.Add("--taskbar-icon")
+            [void]$packArgs.Add($taskbarIcon)
+          } else {
+            Write-Host "WARNING: Taskbar icon not found: $taskbarIcon"
+          }
         }
         
         Write-Host "=========================================="
-        Write-Host "Universal Cloud Packager v6.1"
+        Write-Host "Universal Cloud Packager v6.2"
         Write-Host "=========================================="
         Write-Host "Source: ${{ inputs.source_file }}"
         Write-Host "Name: ${{ inputs.output_name }}"
         Write-Host "Mode: ${{ inputs.pack_mode }}"
         Write-Host "No Console: ${{ inputs.no_console }}"
-        Write-Host "EXE Icon: ${{ inputs.exe_icon }}"
-        Write-Host "Window Icon: ${{ inputs.window_icon }}"
-        Write-Host "Taskbar Icon: ${{ inputs.taskbar_icon }}"
+        Write-Host "EXE Icon: $exeIcon"
+        Write-Host "Window Icon: $windowIcon"
+        Write-Host "Taskbar Icon: $taskbarIcon"
+        Write-Host "=========================================="
+        Write-Host "Full command arguments:"
+        Write-Host ($packArgs -join " ")
         Write-Host "=========================================="
         
-        python cloud_packager_v61.py @args
+        # 执行打包
+        & python cloud_packager_v61.py @packArgs
+        
+        if ($LASTEXITCODE -ne 0) {
+          Write-Host "Build failed with exit code: $LASTEXITCODE"
+          exit $LASTEXITCODE
+        }
       shell: pwsh
     
     - name: Verify output
@@ -148,6 +189,7 @@ jobs:
           Write-Host "Size: $([math]::Round($size, 2)) MB"
         } else {
           Write-Host "BUILD FAILED - Output not found"
+          Write-Host "=== dist folder contents ==="
           Get-ChildItem -Path "dist" -Recurse -ErrorAction SilentlyContinue
           exit 1
         }
