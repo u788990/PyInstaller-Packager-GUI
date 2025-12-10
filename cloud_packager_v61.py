@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-通用云打包器 v6.3 - 完整图标支持版
+通用云打包器 v6.4 - 完整修复版
 
 修复内容：
-1. 使用 .spec 文件代替超长命令行（解决 WinError 206）
-2. 强制 UTF-8 输出（解决中文编码问题）
-3. 完整图标支持：Tkinter / PyQt5 / PyQt6 / PySide6 / Pygame
-4. 优化大型库（torch/onnxruntime/cv2）的处理
+1. v6.2: 使用 .spec 文件代替超长命令行
+2. v6.3: 完整图标支持 PyQt5/PyQt6/PySide6/Tkinter/Pygame
+3. v6.4: 修复 EXE 图标丢失问题（spec 文件格式修正）
 """
 
-# ==================== 强制 UTF-8 编码 ====================
 import sys
 import os
 
@@ -23,7 +21,6 @@ if sys.platform == 'win32':
         subprocess.run(['chcp', '65001'], shell=True, capture_output=True)
     except:
         pass
-    
     try:
         import io
         if hasattr(sys.stdout, 'buffer'):
@@ -40,15 +37,14 @@ import glob
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Set, Dict, List, Tuple, Optional
+from typing import Set, List, Tuple, Optional
 
 
 def safe_print(msg: str):
     try:
         print(msg, flush=True)
     except UnicodeEncodeError:
-        ascii_msg = msg.encode('ascii', errors='replace').decode('ascii')
-        print(ascii_msg, flush=True)
+        print(msg.encode('ascii', errors='replace').decode('ascii'), flush=True)
 
 
 class UniversalCloudPackager:
@@ -133,15 +129,15 @@ class UniversalCloudPackager:
         
         self._temp_files = []
         self._detected_imports: Set[str] = set()
-        self._collect_packages: Set[str] = set()
-        self._hidden_imports: Set[str] = set()
     
     def log(self, msg: str, level: str = "INFO"):
         prefix = {"INFO": "[Pack]", "WARN": "[WARN]", "ERROR": "[ERR]"}
         safe_print(f"{prefix.get(level, '[Pack]')} {msg}")
     
     def prepare_exe_icon(self) -> Optional[str]:
+        """准备 EXE 图标（PNG 转 ICO）"""
         if not self.exe_icon:
+            self.log("No EXE icon specified")
             return None
         
         icon_path = os.path.abspath(self.exe_icon)
@@ -149,30 +145,41 @@ class UniversalCloudPackager:
             self.log(f"EXE icon not found: {icon_path}", "WARN")
             return None
         
+        self.log(f"Processing EXE icon: {icon_path}")
+        
+        # 如果是 ICO 直接使用
         if icon_path.lower().endswith('.ico'):
+            self.log(f"Using ICO directly: {icon_path}")
             return icon_path
         
+        # PNG 转 ICO
         if icon_path.lower().endswith('.png'):
             try:
                 from PIL import Image
+                self.log("Converting PNG to ICO...")
+                
                 img = Image.open(icon_path)
                 if img.mode != 'RGBA':
                     img = img.convert('RGBA')
                 
-                ico_path = os.path.join(tempfile.gettempdir(), f"{self.name}_icon.ico")
+                # 放在当前目录，避免路径问题
+                ico_path = os.path.abspath(f"{self.name}_icon.ico")
                 sizes = [(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
                 img.save(ico_path, format='ICO', sizes=sizes)
                 
                 self._temp_files.append(ico_path)
-                self.log(f"Created ICO from PNG")
+                self.log(f"Created ICO: {ico_path}")
                 return ico_path
+                
             except Exception as e:
                 self.log(f"ICO conversion failed: {e}", "WARN")
+                return None
         
+        self.log(f"Unsupported icon format: {icon_path}", "WARN")
         return None
     
     def create_icon_wrapper(self) -> Optional[str]:
-        """创建包含所有 GUI 框架图标 Hook 的包装器"""
+        """创建包含图标 Hook 的包装器"""
         encodings_to_try = ['utf-8', 'gbk', 'cp1252', 'latin-1']
         original_code = None
         
@@ -189,7 +196,6 @@ class UniversalCloudPackager:
             return None
         
         window_icon_name = os.path.basename(self.window_icon) if self.window_icon else ''
-        taskbar_icon_name = os.path.basename(self.taskbar_icon) if self.taskbar_icon else ''
         
         cleanup_code = ''
         if self.mode == 'onefile' and self.cleanup_temp:
@@ -205,9 +211,8 @@ if hasattr(sys, '_MEIPASS'):
     atexit.register(_cleanup_meipass)
 '''
         
-        # 完整的图标 Hook 代码
         icon_code = f'''
-# ==================== Icon Setup v6.3 ====================
+# ==================== Icon Setup v6.4 ====================
 import sys
 import os
 
@@ -227,17 +232,16 @@ def _get_resource_path(filename):
             return os.path.abspath(candidate)
     return None
 
-# Windows Taskbar AppUserModelID
+# Windows Taskbar
 if sys.platform == 'win32':
     try:
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(f'{{_APP_NAME}}.App.1.0')
     except: pass
 
-# ==================== PyQt5 Hook ====================
+# PyQt5
 try:
     from PyQt5 import QtWidgets, QtGui
-    
     _orig_qapp = QtWidgets.QApplication.__init__
     def _new_qapp(self, *args, **kwargs):
         _orig_qapp(self, *args, **kwargs)
@@ -271,10 +275,9 @@ try:
 except ImportError:
     pass
 
-# ==================== PyQt6 Hook ====================
+# PyQt6
 try:
     from PyQt6 import QtWidgets as QtWidgets6, QtGui as QtGui6
-    
     _orig_qapp6 = QtWidgets6.QApplication.__init__
     def _new_qapp6(self, *args, **kwargs):
         _orig_qapp6(self, *args, **kwargs)
@@ -287,10 +290,9 @@ try:
 except ImportError:
     pass
 
-# ==================== PySide6 Hook ====================
+# PySide6
 try:
     from PySide6 import QtWidgets as PySide6Widgets, QtGui as PySide6Gui
-    
     _orig_pyside6 = PySide6Widgets.QApplication.__init__
     def _new_pyside6(self, *args, **kwargs):
         _orig_pyside6(self, *args, **kwargs)
@@ -303,10 +305,9 @@ try:
 except ImportError:
     pass
 
-# ==================== Tkinter Hook ====================
+# Tkinter
 try:
     import tkinter as tk
-    
     _orig_tk = tk.Tk.__init__
     def _new_tk(self, *args, **kwargs):
         _orig_tk(self, *args, **kwargs)
@@ -324,10 +325,9 @@ try:
 except ImportError:
     pass
 
-# ==================== Pygame Hook ====================
+# Pygame
 try:
     import pygame
-    
     _orig_pg_init = pygame.init
     def _new_pg_init(*args, **kwargs):
         result = _orig_pg_init(*args, **kwargs)
@@ -338,33 +338,6 @@ try:
         except: pass
         return result
     pygame.init = _new_pg_init
-    
-    _orig_set_mode = pygame.display.set_mode
-    def _new_set_mode(*args, **kwargs):
-        result = _orig_set_mode(*args, **kwargs)
-        try:
-            icon_path = _get_resource_path(_WINDOW_ICON)
-            if icon_path and os.path.exists(icon_path):
-                pygame.display.set_icon(pygame.image.load(icon_path))
-        except: pass
-        return result
-    pygame.display.set_mode = _new_set_mode
-except ImportError:
-    pass
-
-# ==================== wxPython Hook ====================
-try:
-    import wx
-    
-    _orig_wxframe = wx.Frame.__init__
-    def _new_wxframe(self, *args, **kwargs):
-        _orig_wxframe(self, *args, **kwargs)
-        try:
-            icon_path = _get_resource_path(_WINDOW_ICON)
-            if icon_path and os.path.exists(icon_path):
-                self.SetIcon(wx.Icon(icon_path, wx.BITMAP_TYPE_PNG))
-        except: pass
-    wx.Frame.__init__ = _new_wxframe
 except ImportError:
     pass
 
@@ -373,12 +346,12 @@ except ImportError:
         
         wrapper_code = cleanup_code + icon_code + '\n' + original_code
         
-        wrapper_file = os.path.join(tempfile.gettempdir(), f"wrapper_{self.name}_{int(time.time())}.py")
+        wrapper_file = os.path.abspath(f"wrapper_{self.name}_{int(time.time())}.py")
         with open(wrapper_file, 'w', encoding='utf-8') as f:
             f.write(wrapper_code)
         
         self._temp_files.append(wrapper_file)
-        self.log("Created wrapper with PyQt5/PyQt6/PySide6/Tkinter/Pygame/wx hooks")
+        self.log("Created wrapper with icon hooks")
         return wrapper_file
     
     def analyze_imports(self) -> Set[str]:
@@ -431,22 +404,22 @@ except ImportError:
             collect.add('PyQt5')
             hidden.add('PyQt5.sip')
         
-        self.log(f"Collect: {len(collect)}, Hidden: {len(hidden)}")
         return hidden, collect
     
     def collect_data_files(self) -> List[Tuple[str, str]]:
         data = []
         collected = set()
         
-        # 关键：添加图标文件
+        # 添加窗口/任务栏图标
         for icon in [self.window_icon, self.taskbar_icon]:
             if icon and os.path.exists(icon):
                 abs_path = os.path.abspath(icon)
                 if abs_path not in collected:
                     data.append((abs_path, '.'))
                     collected.add(abs_path)
-                    self.log(f"Adding icon: {os.path.basename(icon)}")
+                    self.log(f"Adding data: {os.path.basename(icon)}")
         
+        # 其他资源文件
         for ext in ['*.png', '*.jpg', '*.ico', '*.json', '*.yaml', '*.txt', '*.wav', '*.mp3', '*.ttf', '*.onnx', '*.pth']:
             for f in glob.glob(os.path.join(self.source_dir, ext)):
                 if os.path.isfile(f):
@@ -463,46 +436,132 @@ except ImportError:
         return data
     
     def generate_spec_file(self, source: str, hidden: Set[str], collect: Set[str],
-                           data_files: List[Tuple[str, str]], ico_path: str) -> str:
+                           data_files: List[Tuple[str, str]], ico_path: Optional[str]) -> str:
+        """生成 spec 文件 - v6.4 修复 EXE 图标"""
         
-        datas_list = [f"(r'{src.replace(chr(92), chr(92)*2)}', r'{dst}')" for src, dst in data_files]
-        datas_str = ',\n        '.join(datas_list)
+        # 转义路径中的反斜杠
+        def escape_path(p):
+            return p.replace('\\', '\\\\') if p else ''
         
+        source_escaped = escape_path(source)
+        
+        # 数据文件
+        datas_lines = []
+        for src, dst in data_files:
+            datas_lines.append(f"        (r'{escape_path(src)}', r'{dst}'),")
+        datas_str = '\n'.join(datas_lines)
+        
+        # 隐藏导入
         hidden_list = sorted(list(hidden))[:200]
-        hidden_str = ',\n        '.join([f"'{h}'" for h in hidden_list])
+        hidden_lines = [f"        '{h}'," for h in hidden_list]
+        hidden_str = '\n'.join(hidden_lines)
         
-        collect_calls = ' + '.join([f"collect_submodules('{pkg}')" for pkg in sorted(collect)])
-        hiddenimports_expr = f"[\n        {hidden_str}\n    ] + {collect_calls}" if collect_calls else f"[\n        {hidden_str}\n    ]"
+        # collect_submodules
+        collect_lines = [f"        *collect_submodules('{pkg}')," for pkg in sorted(collect)]
+        collect_str = '\n'.join(collect_lines)
         
-        excludes_str = ',\n        '.join([f"'{e}'" for e in self.ALWAYS_EXCLUDE])
-        icon_line = f"icon=r'{ico_path}'," if ico_path else ""
+        # 排除模块
+        excludes_lines = [f"        '{e}'," for e in self.ALWAYS_EXCLUDE]
+        excludes_str = '\n'.join(excludes_lines)
         
-        if self.mode == 'onefile':
-            exe_section = f"""
-exe = EXE(pyz, a.scripts, a.binaries, a.datas, [],
-    name='{self.name}', debug=False, strip=False, upx=False,
-    runtime_tmpdir=None, console={not self.noconsole}, {icon_line})
-"""
+        # EXE 图标 - v6.4 关键修复
+        if ico_path and os.path.exists(ico_path):
+            icon_param = f"icon=r'{escape_path(ico_path)}',"
+            self.log(f"EXE icon set: {ico_path}")
         else:
-            exe_section = f"""
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True,
-    name='{self.name}', debug=False, strip=False, upx=False,
-    console={not self.noconsole}, {icon_line})
-coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='{self.name}')
-"""
+            icon_param = ""
+            self.log("No EXE icon set")
         
-        spec_content = f"""# -*- mode: python ; coding: utf-8 -*-
+        # 根据模式生成不同的 EXE 配置
+        if self.mode == 'onefile':
+            exe_section = f'''
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.datas,
+    [],
+    name='{self.name}',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console={not self.noconsole},
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    {icon_param}
+)
+'''
+        else:
+            exe_section = f'''
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='{self.name}',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console={not self.noconsole},
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    {icon_param}
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='{self.name}',
+)
+'''
+        
+        spec_content = f'''# -*- mode: python ; coding: utf-8 -*-
+# Auto-generated by Universal Cloud Packager v6.4
+
 from PyInstaller.utils.hooks import collect_submodules
+
 block_cipher = None
-a = Analysis([r'{source.replace(chr(92), chr(92)*2)}'], pathex=[], binaries=[], 
-    datas=[{datas_str}],
-    hiddenimports={hiddenimports_expr},
-    hookspath=[], runtime_hooks=[],
-    excludes=[{excludes_str}],
-    cipher=block_cipher, noarchive=False)
+
+a = Analysis(
+    [r'{source_escaped}'],
+    pathex=[],
+    binaries=[],
+    datas=[
+{datas_str}
+    ],
+    hiddenimports=[
+{hidden_str}
+{collect_str}
+    ],
+    hookspath=[],
+    hooksconfig={{}},
+    runtime_hooks=[],
+    excludes=[
+{excludes_str}
+    ],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 {exe_section}
-"""
+'''
         
         spec_path = f"{self.name}.spec"
         with open(spec_path, 'w', encoding='utf-8') as f:
@@ -516,7 +575,7 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
         start = time.time()
         
         self.log("=" * 60)
-        self.log("Universal Cloud Packager v6.3 (Full Icon Support)")
+        self.log("Universal Cloud Packager v6.4")
         self.log("=" * 60)
         self.log(f"Source: {repr(self.source)}")
         self.log(f"Output: {self.name}")
@@ -532,8 +591,11 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
         
         try:
             self.install_requirements()
+            
+            # 准备 EXE 图标（PNG 转 ICO）
             ico_path = self.prepare_exe_icon()
             
+            # 创建包装器（窗口/任务栏图标 Hook）
             wrapper_source = self.source
             if self.window_icon or self.taskbar_icon or (self.mode == 'onefile' and self.cleanup_temp):
                 wrapper_result = self.create_icon_wrapper()
@@ -544,7 +606,21 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
             data = self.collect_data_files()
             self.log(f"Data files: {len(data)}")
             
+            # 生成 spec 文件
             spec_path = self.generate_spec_file(wrapper_source, hidden, collect, data, ico_path)
+            
+            # 打印 spec 文件内容用于调试
+            self.log("-" * 60)
+            self.log("Spec file content (icon section):")
+            with open(spec_path, 'r') as f:
+                content = f.read()
+                if 'icon=' in content:
+                    for line in content.split('\n'):
+                        if 'icon=' in line:
+                            self.log(f"  {line.strip()}")
+                else:
+                    self.log("  No icon parameter found!")
+            self.log("-" * 60)
             
             import subprocess
             cmd = [self.python, '-m', 'PyInstaller', '--clean', '--noconfirm', spec_path]
@@ -606,7 +682,7 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description='Universal Cloud Packager v6.3')
+    parser = argparse.ArgumentParser(description='Universal Cloud Packager v6.4')
     parser.add_argument('--source', '-s', required=True)
     parser.add_argument('--name', '-n', required=True)
     parser.add_argument('--mode', '-m', choices=['onefile', 'onedir'], default='onefile')
