@@ -22,6 +22,8 @@ import queue
 import time
 import json
 import gc
+import urllib.request
+import urllib.error
 from pathlib import Path
 from datetime import datetime, date
 from io import BytesIO
@@ -150,9 +152,10 @@ from PyQt5.QtWidgets import (
     QTextEdit, QComboBox, QRadioButton, QButtonGroup, QGroupBox, QDoubleSpinBox,
     QTabWidget, QLineEdit, QDialog, QFrame, QToolTip, QSplitter, QPlainTextEdit,
     QListWidgetItem, QColorDialog, QTableWidget, QTableWidgetItem, QAbstractItemView,
-    QHeaderView, QSizePolicy, QSlider, QSpacerItem, QStackedWidget, QFormLayout
+    QHeaderView, QSizePolicy, QSlider, QSpacerItem, QStackedWidget, QFormLayout,
+    QProgressDialog
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject, QSize
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject, QSize, QSignalBlocker
 from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QIcon, QPixmap, QImage, QPainter, QPen, QBrush
 
 # ==================== 配置管理器 ====================
@@ -178,6 +181,10 @@ class ConfigManager:
         "default_threads": 4,
         "enable_sound": True,
         "auto_open_folder": True,
+        "model_mirrors": {
+            "global": "",
+            "cn": ""
+        }
     }
     
     _config = None
@@ -254,6 +261,22 @@ class ConfigManager:
         Path(base_path).mkdir(parents=True, exist_ok=True)
         return base_path
 
+    @classmethod
+    def get_tools_dir(cls):
+        p = cls.BIEMO_BASE / "tools"
+        p.mkdir(parents=True, exist_ok=True)
+        return str(p)
+
+    @classmethod
+    def get_tool_path(cls, name: str):
+        p = Path(cls.get_tools_dir()) / (name + (".exe" if os.name == "nt" else ""))
+        return str(p) if p.exists() else name
+
+    @classmethod
+    def get_model_mirrors(cls):
+        mirrors = cls.get("model_mirrors", {"global": "", "cn": ""})
+        return mirrors if isinstance(mirrors, dict) else {"global": "", "cn": ""}
+
 ConfigManager.load()
 os.environ["U2NET_HOME"] = ConfigManager.get_model_dir()
 os.environ["REMBG_HOME"] = ConfigManager.get_model_dir()
@@ -285,6 +308,12 @@ class LogManager(QObject):
     def warning(self, msg): self.log(msg, "warning")
     def error(self, msg): self.log(msg, "error")
     def success(self, msg): self.log(msg, "success")
+
+    def pipe(self, message: str, level: str = "info"):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        formatted = f"[{timestamp}] {message}"
+        self.logs.append((formatted, level))
+        self.log_signal.emit(formatted, level)
 
 logger = LogManager.instance()
 
@@ -524,6 +553,42 @@ class ModelManager:
         cls.save_models_config()
         logger.info(f"扫描完成: {found_count} 个模型")
         return cls._models_status
+
+    @classmethod
+    def ensure_model(cls, model_id: str, parent=None) -> bool:
+        return False
+
+    @classmethod
+    def download_model(cls, model_id: str, parent=None) -> bool:
+        return False
+        sha = info.get("sha256")
+        if sha:
+            try:
+                h = hashlib.sha256()
+                with open(target, "rb") as f:
+                    for b in iter(lambda: f.read(256 * 1024), b""):
+                        h.update(b)
+                if h.hexdigest().lower() != sha.lower():
+                    try:
+                        target.unlink()
+                    except:
+                        pass
+                    QMessageBox.critical(parent, "错误", "校验失败")
+                    return False
+            except Exception as e:
+                QMessageBox.critical(parent, "错误", str(e))
+                return False
+        size_mb = target.stat().st_size // (1024 * 1024)
+        cls._models_status[model_id] = {
+            "exists": True,
+            "file": target.name,
+            "path": str(target),
+            "size_mb": size_mb,
+            "scan_time": datetime.now().isoformat()
+        }
+        cls.save_models_config()
+        logger.success(f"模型已下载: {target}")
+        return True
     
     @classmethod
     def check_model_exists(cls, model_id: str) -> bool:
@@ -601,7 +666,26 @@ class ModelManager:
             
             gc.collect()
             
-            session = rembg_new_session(model_id)
+            old_out, old_err = sys.stdout, sys.stderr
+            class _LoggerStream:
+                def __init__(self, level):
+                    self.buf = ""
+                    self.level = level
+                def write(self, s):
+                    self.buf += s
+                    while "\n" in self.buf:
+                        line, self.buf = self.buf.split("\n", 1)
+                        line = line.strip()
+                        if line:
+                            logger.pipe(line, self.level)
+                def flush(self):
+                    pass
+            sys.stdout = _LoggerStream("info")
+            sys.stderr = _LoggerStream("warning")
+            try:
+                session = rembg_new_session(model_id)
+            finally:
+                sys.stdout, sys.stderr = old_out, old_err
             
             elapsed = time.time() - start
             logger.success(f"模型加载成功 ({elapsed:.1f}s)")
@@ -651,6 +735,12 @@ except ImportError:
     logger.error("✗ rembg 模块未安装")
 except Exception as e:
     logger.error(f"rembg 加载失败: {e}")
+
+if False:
+    import rembg
+    import rembg.sessions.u2net
+    import rembg.sessions.isnet
+    import onnxruntime
 
 # 执行硬件检测和模型扫描
 HardwareInfo.detect()
@@ -872,7 +962,7 @@ class SpriteEditorDialog(QDialog):
     def __init__(self, parent=None, source_sprite_path: str = None, frames: list = None, source_frames: list = None):
         super().__init__(parent)
         self.setWindowTitle("编辑精灵图")
-        self.setMinimumSize(1200, 800)
+        self.setMinimumSize(1200, 820)
         self.frames = []
         self.index_map = []
         self.scale_percent = 100
@@ -892,6 +982,7 @@ class SpriteEditorDialog(QDialog):
         right_layout = QVBoxLayout()
         right_layout.addWidget(self.table, 1)
         bottom_ctrl = self._build_output_controls()
+        # 预览列数来源于主窗口设置，但输出列数保持编辑器自身默认值
         right_layout.addLayout(bottom_ctrl)
         right_widget = QWidget()
         right_widget.setLayout(right_layout)
@@ -908,10 +999,19 @@ class SpriteEditorDialog(QDialog):
                 self.base_w, self.base_h = self.frames[0].size
             except:
                 pass
-            cols = max(1, int(self.col_spin.value()))
-            self._populate(cols)
+            preview_cols = None
             try:
-                self.display_cols = cols
+                if parent is not None and hasattr(parent, 'sprite_cols'):
+                    preview_cols = max(1, int(parent.sprite_cols.value()))
+            except Exception:
+                preview_cols = None
+            if preview_cols is None:
+                preview_cols = 10
+            self._populate(preview_cols)
+            try:
+                self.display_cols = preview_cols
+                if hasattr(self, 'preview_cols_spin'):
+                    self.preview_cols_spin.setValue(preview_cols)
                 self._capture_origin_state()
             except Exception:
                 pass
@@ -933,7 +1033,7 @@ class SpriteEditorDialog(QDialog):
                 self.base_w, self.base_h = self.source_img.size
             except:
                 pass
-            self.col_spin.setValue(5)
+            # 输出列数保持编辑器默认 5，不从主窗口设置同步
             try:
                 self._update_cell_size_label()
             except Exception:
@@ -941,6 +1041,8 @@ class SpriteEditorDialog(QDialog):
             self._populate(1)
             try:
                 self.display_cols = 1
+                if hasattr(self, 'preview_cols_spin'):
+                    self.preview_cols_spin.setValue(1)
                 self._capture_origin_state()
             except Exception:
                 pass
@@ -956,6 +1058,8 @@ class SpriteEditorDialog(QDialog):
         self.btn_select_all.clicked.connect(self._select_all)
         self.btn_clear.clicked.connect(self._clear_selection)
         self.scale_slider.valueChanged.connect(self._on_scale_changed)
+        if hasattr(self, 'preview_cols_spin'):
+            self.preview_cols_spin.valueChanged.connect(lambda v: [setattr(self, 'display_cols', max(1, int(v))), self._populate(max(1, int(v)))])
         self._update_count()
 
     def _pil_to_pixmap(self, pil, idx):
@@ -1146,6 +1250,9 @@ class SpriteEditorDialog(QDialog):
         ctrl.addWidget(QLabel("输出列数:"))
         self.col_spin = QSpinBox(); self.col_spin.setRange(1, 1000); self.col_spin.setValue(5)
         ctrl.addWidget(self.col_spin)
+        ctrl.addWidget(QLabel("预览列数:"))
+        self.preview_cols_spin = QSpinBox(); self.preview_cols_spin.setRange(1, 1000); self.preview_cols_spin.setValue(getattr(self, 'display_cols', 10))
+        ctrl.addWidget(self.preview_cols_spin)
         self.select_cols = QCheckBox("按列选择")
         ctrl.addWidget(self.select_cols)
         ctrl.addWidget(QLabel("行间距:"))
@@ -1155,7 +1262,7 @@ class SpriteEditorDialog(QDialog):
         ctrl.addWidget(self.preview_row_gap)
         ctrl.addWidget(QLabel("缩放:"))
         self.scale_slider = QSlider(Qt.Horizontal)
-        self.scale_slider.setRange(25, 200)
+        self.scale_slider.setRange(10, 200)
         self.scale_slider.setValue(self.scale_percent)
         self.scale_slider.setTickInterval(5)
         self.scale_slider.setSingleStep(5)
@@ -1384,6 +1491,8 @@ class SpriteEditorDialog(QDialog):
                 self.row_counts = [cols] * rows
                 if hasattr(self, 'undo_btn'):
                     self.undo_btn.setEnabled(True)
+                if hasattr(self, 'preview_cols_spin'):
+                    self.preview_cols_spin.setValue(self.display_cols)
             elif text.startswith("固定尺寸"):
                 mw = max(0, int(self.fix_margin_spin.value()))
                 mh = mw
@@ -1452,6 +1561,8 @@ class SpriteEditorDialog(QDialog):
                 self.row_counts = [cols] * rows
                 if hasattr(self, 'undo_btn'):
                     self.undo_btn.setEnabled(True)
+                if hasattr(self, 'preview_cols_spin'):
+                    self.preview_cols_spin.setValue(self.display_cols)
             else:
                 if text.startswith("自动检测"):
                     thr = max(0, min(255, int(self.alpha_thr_spin.value())))
@@ -1516,6 +1627,8 @@ class SpriteEditorDialog(QDialog):
                     self.row_counts = [len(g) for g in groups]
                     if hasattr(self, 'undo_btn'):
                         self.undo_btn.setEnabled(True)
+                    if hasattr(self, 'preview_cols_spin'):
+                        self.preview_cols_spin.setValue(self.display_cols)
                 else:
                     p = self.atlas_edit.text() if hasattr(self, 'atlas_edit') else ''
                     if p and os.path.exists(p):
@@ -1570,6 +1683,8 @@ class SpriteEditorDialog(QDialog):
                                 self.row_counts = [len(g) for g in groups]
                                 if hasattr(self, 'undo_btn'):
                                     self.undo_btn.setEnabled(True)
+                                if hasattr(self, 'preview_cols_spin'):
+                                    self.preview_cols_spin.setValue(self.display_cols)
                         except Exception:
                             pass
             try:
@@ -1674,26 +1789,21 @@ class ModelSelector(QComboBox):
     
     def refresh_models(self):
         """刷新模型列表"""
+        blocker = QSignalBlocker(self)
         self.clear()
-        
         ModelManager.scan_models()
-        
         for model_id, info in ModelManager.MODELS.items():
             exists = ModelManager.check_model_exists(model_id)
             loaded = model_id in ModelManager._sessions
-            
             status_icon = "★" if loaded else ("✓" if exists else "○")
             large_mark = "🔴" if info.get("large") else ""
             quality_stars = "★" * info.get("quality", 3)
             display_text = f"{status_icon} {large_mark}{info['name']} [{quality_stars}]"
-            
             self.addItem(display_text, model_id)
-        
         for model_id, status in ModelManager._models_status.items():
             if status.get("custom"):
                 display_text = f"✓ [自定义] {status['file']}"
                 self.addItem(display_text, model_id)
-        
         default_model = ConfigManager.get("default_model", "isnet-general-use")
         for i in range(self.count()):
             if self.itemData(i) == default_model:
@@ -1716,7 +1826,24 @@ class ModelSelector(QComboBox):
             if exists:
                 logger.info(f"已选择模型: {info.get('name', model_id)}")
             else:
-                logger.warning(f"模型未下载，首次使用将自动下载")
+                if getattr(self, '_loader', None) and self._loader.isRunning():
+                    logger.info("正在下载/加载模型，请稍候...")
+                    return
+                logger.info("模型缺失，开始自动下载并加载...")
+                self.setEnabled(False)
+                self._loader = ModelLoadWorker(model_id)
+                def _on_done(s, mid):
+                    logger.success("模型下载并加载完成")
+                    self.setEnabled(True)
+                    # 更新状态但避免触发选择变化的递归
+                    ModelManager.scan_models()
+                    self.refresh_models()
+                def _on_err(e):
+                    logger.error(f"模型加载失败: {e}")
+                    self.setEnabled(True)
+                self._loader.finished.connect(_on_done)
+                self._loader.error.connect(_on_err)
+                self._loader.start()
             
             if info.get("large"):
                 if HardwareInfo.has_sufficient_resources(info.get("size_mb", 900)):
@@ -1966,7 +2093,12 @@ def remove_bg_with_session(pil_img, session):
     return pil_img.convert("RGBA")
 
 def cleanup_edge_pixels(pil_img, feather: int = 1, blur: int = 1, gamma: float = 1.2):
-    """边缘清理"""
+    """
+    边缘清理 - 增强版 v2
+    1. 预清理：清除低透明度的幽灵噪点
+    2. 形态学优化：平滑边缘毛刺
+    3. 智能羽化：保持主体轮廓
+    """
     if not HAS_CV2 or not HAS_NUMPY:
         return pil_img
         
@@ -1974,26 +2106,43 @@ def cleanup_edge_pixels(pil_img, feather: int = 1, blur: int = 1, gamma: float =
         pil_img = pil_img.convert('RGBA')
     
     img_array = np.array(pil_img)
-    alpha = img_array[:, :, 3].astype(np.float32) / 255.0
+    # 分离通道
+    b, g, r, a = cv2.split(img_array)
     
+    # --- 步骤1: 预处理 Alpha 通道 ---
+    # 强制截断低透明度噪点 (去除半透明的残留背景)
+    # 将 Alpha < 20 的像素直接置 0，大于 20 的保留
+    _, hard_alpha = cv2.threshold(a, 20, 255, cv2.THRESH_TOZERO)
+    
+    # --- 步骤2: 形态学处理 (去除毛刺) ---
+    # 使用开运算 (先腐蚀后膨胀) 去除边缘细小的噪点，而不显著缩小物体
     if feather > 0:
-        kernel_size = feather * 2 + 1
+        kernel_size = 3
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-        alpha = cv2.erode(alpha, kernel, iterations=1)
+        hard_alpha = cv2.morphologyEx(hard_alpha, cv2.MORPH_OPEN, kernel, iterations=1)
+        if feather > 1:
+            erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            hard_alpha = cv2.erode(hard_alpha, erode_kernel, iterations=feather - 1)
     
+    # --- 步骤3: 边缘羽化 (高斯模糊 + Gamma) ---
     if blur > 0:
+        alpha_f = hard_alpha.astype(np.float32) / 255.0
         k_blur = blur * 2 + 1
-        alpha = cv2.GaussianBlur(alpha, (k_blur, k_blur), 0)
+        alpha_f = cv2.GaussianBlur(alpha_f, (k_blur, k_blur), 0)
         if gamma != 1.0:
-            alpha = np.power(alpha, gamma)
-    
-    alpha = np.clip(alpha * 255, 0, 255).astype(np.uint8)
-    img_array[:, :, 3] = alpha
+            alpha_f = np.power(alpha_f, gamma)
+        hard_alpha = np.clip(alpha_f * 255, 0, 255).astype(np.uint8)
+
+    img_array = cv2.merge((b, g, r, hard_alpha))
     
     return Image.fromarray(img_array, mode='RGBA')
 
 def remove_isolated_colors(pil_img, min_area: int, remove_internal: bool = True, internal_max_area: int = 100):
-    """移除孤立色块"""
+    """
+    移除孤立色块 - 智能连通域版 v2
+    1. 使用连通组件分析代替轮廓查找，更精准
+    2. 智能保护：始终保留面积最大的色块（主体），防止误删
+    """
     if not HAS_CV2 or not HAS_NUMPY:
         return pil_img
         
@@ -2006,34 +2155,36 @@ def remove_isolated_colors(pil_img, min_area: int, remove_internal: bool = True,
     img_array = np.array(pil_img)
     alpha = img_array[:, :, 3].copy()
     
-    _, binary = cv2.threshold(alpha, 10, 255, cv2.THRESH_BINARY)
+    _, binary = cv2.threshold(alpha, 20, 255, cv2.THRESH_BINARY)
     
     has_change = False
     
     if min_area > 0:
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if contours:
-            mask_keep = np.zeros_like(alpha)
-            for contour in contours:
-                if cv2.contourArea(contour) >= min_area:
-                    cv2.drawContours(mask_keep, [contour], -1, 255, thickness=-1)
-                else:
-                    has_change = True
-            
-            alpha = cv2.bitwise_and(alpha, alpha, mask=mask_keep)
-            _, binary = cv2.threshold(alpha, 10, 255, cv2.THRESH_BINARY)
-    
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+        if num_labels > 1:
+            areas = stats[1:, cv2.CC_STAT_AREA]
+            if len(areas) > 0:
+                max_area_idx = np.argmax(areas) + 1
+                new_alpha = np.zeros_like(alpha)
+                for i in range(1, num_labels):
+                    area = stats[i, cv2.CC_STAT_AREA]
+                    if i == max_area_idx or area >= min_area:
+                        component_mask = (labels == i).astype(np.uint8) * 255
+                        new_alpha = cv2.bitwise_or(new_alpha, cv2.bitwise_and(alpha, alpha, mask=component_mask))
+                    else:
+                        has_change = True
+                alpha = new_alpha
+                _, binary = cv2.threshold(alpha, 20, 255, cv2.THRESH_BINARY)
+
     if remove_internal and internal_max_area > 0:
         kernel_size = max(3, int(math.sqrt(internal_max_area)))
         if kernel_size % 2 == 0:
             kernel_size += 1
-        
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-        closed_alpha = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        holes_mask = cv2.bitwise_and(cv2.bitwise_not(binary), closed_alpha)
-        
-        if cv2.countNonZero(holes_mask) > 0:
-            alpha = cv2.add(alpha, holes_mask)
+        closed_mask = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        holes = cv2.bitwise_and(closed_mask, cv2.bitwise_not(binary))
+        if cv2.countNonZero(holes) > 0:
+            alpha = cv2.add(alpha, holes)
             has_change = True
     
     if not has_change:
@@ -2111,6 +2262,22 @@ class BaseWorker(QThread):
     def stop(self):
         self._stop = True
         logger.info("正在停止任务...")
+
+class ModelLoadWorker(QThread):
+    finished = pyqtSignal(object, str)
+    error = pyqtSignal(str)
+    def __init__(self, model_id: str):
+        super().__init__()
+        self.model_id = model_id
+    def run(self):
+        try:
+            s = ModelManager.load_model(self.model_id)
+            if s:
+                self.finished.emit(s, self.model_id)
+            else:
+                self.error.emit("模型加载失败")
+        except Exception as e:
+            self.error.emit(str(e))
 
 class VideoToImagesWorker(BaseWorker):
     def __init__(self, video_path: str, output_dir: str, params: dict):
@@ -2406,8 +2573,9 @@ class VideoRemoveBgWorker(BaseWorker):
                     macro_block_size=1
                 )
             else:
+                ffmpeg_bin = ConfigManager.get_tool_path('ffmpeg')
                 cmd = [
-                    'ffmpeg', '-y',
+                    ffmpeg_bin, '-y',
                     '-f', 'rawvideo',
                     '-vcodec', 'rawvideo',
                     '-pix_fmt', 'rgba',
@@ -3266,11 +3434,6 @@ class MainWindow(QWidget):
         rembg_label.setStyleSheet(f"color: {'#27ae60' if USE_REMBG else '#e74c3c'};")
         status_layout.addWidget(rembg_label)
         
-        dep_btn = QPushButton("检测依赖")
-        dep_btn.setFixedWidth(80)
-        dep_btn.clicked.connect(lambda: DependencyDialog(self).exec_())
-        status_layout.addWidget(dep_btn)
-        
         status_layout.addStretch()
         
         license_label = QLabel(f"{'✓ 已激活' if self.activated else f'试用模式'}")
@@ -3594,25 +3757,31 @@ class MainWindow(QWidget):
         bl.addWidget(self.sprite_rembg, 0, 0, 1, 2)
         bl.addItem(QSpacerItem(40, 1, QSizePolicy.Fixed, QSizePolicy.Minimum), 0, 2)
         
+        bl.addWidget(QLabel("清理预设:"), 0, 3)
+        self.sprite_clean_preset = QComboBox()
+        self.sprite_clean_preset.addItems(["关闭", "轻度", "标准", "强力", "自定义"])
+        self.sprite_clean_preset.setCurrentText("标准")
+        bl.addWidget(self.sprite_clean_preset, 0, 4)
+        
         self.sprite_clean = QCheckBox("边缘清理")
         self.sprite_clean.setEnabled(False)
-        bl.addWidget(self.sprite_clean, 0, 3)
-        bl.addWidget(QLabel("腐蚀:"), 0, 4)
+        bl.addWidget(self.sprite_clean, 0, 5)
+        bl.addWidget(QLabel("腐蚀:"), 0, 6)
         self.sprite_feather = QSpinBox()
         self.sprite_feather.setValue(1)
         self.sprite_feather.setRange(0, 10)
-        bl.addWidget(self.sprite_feather, 0, 5)
-        bl.addWidget(QLabel("模糊:"), 0, 6)
+        bl.addWidget(self.sprite_feather, 0, 7)
+        bl.addWidget(QLabel("模糊:"), 0, 8)
         self.sprite_blur = QSpinBox()
         self.sprite_blur.setValue(1)
         self.sprite_blur.setRange(0, 10)
-        bl.addWidget(self.sprite_blur, 0, 7)
-        bl.addWidget(QLabel("Gamma:"), 0, 8)
+        bl.addWidget(self.sprite_blur, 0, 9)
+        bl.addWidget(QLabel("Gamma:"), 0, 10)
         self.sprite_gamma = QDoubleSpinBox()
         self.sprite_gamma.setValue(1.2)
         self.sprite_gamma.setRange(0.5, 2.0)
         self.sprite_gamma.setSingleStep(0.1)
-        bl.addWidget(self.sprite_gamma, 0, 9)
+        bl.addWidget(self.sprite_gamma, 0, 11)
         
         self.sprite_iso = QCheckBox("移除孤立色块")
         self.sprite_iso.setEnabled(False)
@@ -3633,7 +3802,63 @@ class MainWindow(QWidget):
         self.sprite_internal_area.setRange(1, 10000)
         bl.addWidget(self.sprite_internal_area, 1, 7)
         
+        def _apply_preset(name: str):
+            if name == "关闭":
+                self.sprite_clean.setChecked(False)
+                self.sprite_iso.setChecked(False)
+                self.sprite_internal.setChecked(False)
+                self.sprite_feather.setValue(0)
+                self.sprite_blur.setValue(0)
+                self.sprite_gamma.setValue(1.0)
+                self.sprite_iso_area.setValue(10)
+                self.sprite_internal_area.setValue(50)
+                for w in [self.sprite_feather, self.sprite_blur, self.sprite_gamma, self.sprite_iso_area, self.sprite_internal_area]:
+                    w.setEnabled(False)
+            elif name == "轻度":
+                self.sprite_clean.setChecked(True)
+                self.sprite_iso.setChecked(True)
+                self.sprite_internal.setChecked(True)
+                self.sprite_feather.setValue(1)
+                self.sprite_blur.setValue(1)
+                self.sprite_gamma.setValue(1.0)
+                self.sprite_iso_area.setValue(20)
+                self.sprite_internal_area.setValue(80)
+                for w in [self.sprite_feather, self.sprite_blur, self.sprite_gamma, self.sprite_iso_area, self.sprite_internal_area]:
+                    w.setEnabled(False)
+            elif name == "标准":
+                self.sprite_clean.setChecked(True)
+                self.sprite_iso.setChecked(True)
+                self.sprite_internal.setChecked(True)
+                self.sprite_feather.setValue(1)
+                self.sprite_blur.setValue(1)
+                self.sprite_gamma.setValue(1.2)
+                self.sprite_iso_area.setValue(50)
+                self.sprite_internal_area.setValue(100)
+                for w in [self.sprite_feather, self.sprite_blur, self.sprite_gamma, self.sprite_iso_area, self.sprite_internal_area]:
+                    w.setEnabled(False)
+            elif name == "强力":
+                self.sprite_clean.setChecked(True)
+                self.sprite_iso.setChecked(True)
+                self.sprite_internal.setChecked(True)
+                self.sprite_feather.setValue(2)
+                self.sprite_blur.setValue(2)
+                self.sprite_gamma.setValue(1.3)
+                self.sprite_iso_area.setValue(150)
+                self.sprite_internal_area.setValue(200)
+                for w in [self.sprite_feather, self.sprite_blur, self.sprite_gamma, self.sprite_iso_area, self.sprite_internal_area]:
+                    w.setEnabled(False)
+            else:  # 自定义
+                self.sprite_clean.setChecked(True)
+                self.sprite_iso.setChecked(True)
+                self.sprite_internal.setChecked(True)
+                for w in [self.sprite_feather, self.sprite_blur, self.sprite_gamma, self.sprite_iso_area, self.sprite_internal_area]:
+                    w.setEnabled(True)
+        
+        self.sprite_clean_preset.currentTextChanged.connect(_apply_preset)
+        _apply_preset(self.sprite_clean_preset.currentText())
+        
         self.sprite_rembg.stateChanged.connect(lambda s: [
+            self.sprite_clean_preset.setEnabled(s),
             self.sprite_clean.setEnabled(s), 
             self.sprite_iso.setEnabled(s),
             self.sprite_internal.setEnabled(s)
@@ -3747,6 +3972,11 @@ class MainWindow(QWidget):
         self.extract_gamma.setRange(0.5, 2.0)
         self.extract_gamma.setSingleStep(0.1)
         cl.addWidget(self.extract_gamma, 0, 6)
+        cl.addWidget(QLabel("清理预设:"), 0, 7)
+        self.extract_clean_preset = QComboBox()
+        self.extract_clean_preset.addItems(["关闭", "轻度", "标准", "强力", "自定义"])
+        self.extract_clean_preset.setCurrentText("标准")
+        cl.addWidget(self.extract_clean_preset, 0, 8)
         
         self.extract_iso = QCheckBox("移除孤立色块")
         cl.addWidget(self.extract_iso, 1, 0)
@@ -3764,6 +3994,69 @@ class MainWindow(QWidget):
         self.extract_internal_area.setValue(100)
         self.extract_internal_area.setRange(1, 10000)
         cl.addWidget(self.extract_internal_area, 1, 5)
+        def _apply_extract_preset(name: str):
+            if name == "关闭":
+                self.extract_clean.setChecked(False)
+                self.extract_iso.setChecked(False)
+                self.extract_internal.setChecked(False)
+                self.extract_feather.setValue(0)
+                self.extract_blur.setValue(0)
+                self.extract_gamma.setValue(1.0)
+                self.extract_iso_area.setValue(10)
+                self.extract_internal_area.setValue(50)
+                for w in [self.extract_feather, self.extract_blur, self.extract_gamma, self.extract_iso_area, self.extract_internal_area]:
+                    w.setEnabled(False)
+            elif name == "轻度":
+                self.extract_clean.setChecked(True)
+                self.extract_iso.setChecked(True)
+                self.extract_internal.setChecked(True)
+                self.extract_feather.setValue(1)
+                self.extract_blur.setValue(1)
+                self.extract_gamma.setValue(1.0)
+                self.extract_iso_area.setValue(20)
+                self.extract_internal_area.setValue(80)
+                for w in [self.extract_feather, self.extract_blur, self.extract_gamma, self.extract_iso_area, self.extract_internal_area]:
+                    w.setEnabled(False)
+            elif name == "标准":
+                self.extract_clean.setChecked(True)
+                self.extract_iso.setChecked(True)
+                self.extract_internal.setChecked(True)
+                self.extract_feather.setValue(1)
+                self.extract_blur.setValue(1)
+                self.extract_gamma.setValue(1.2)
+                self.extract_iso_area.setValue(50)
+                self.extract_internal_area.setValue(100)
+                for w in [self.extract_feather, self.extract_blur, self.extract_gamma, self.extract_iso_area, self.extract_internal_area]:
+                    w.setEnabled(False)
+            elif name == "强力":
+                self.extract_clean.setChecked(True)
+                self.extract_iso.setChecked(True)
+                self.extract_internal.setChecked(True)
+                self.extract_feather.setValue(2)
+                self.extract_blur.setValue(2)
+                self.extract_gamma.setValue(1.3)
+                self.extract_iso_area.setValue(150)
+                self.extract_internal_area.setValue(200)
+                for w in [self.extract_feather, self.extract_blur, self.extract_gamma, self.extract_iso_area, self.extract_internal_area]:
+                    w.setEnabled(False)
+            else:
+                self.extract_clean.setChecked(True)
+                self.extract_iso.setChecked(True)
+                self.extract_internal.setChecked(True)
+                for w in [self.extract_feather, self.extract_blur, self.extract_gamma, self.extract_iso_area, self.extract_internal_area]:
+                    w.setEnabled(True)
+        self.extract_clean_preset.currentTextChanged.connect(_apply_extract_preset)
+        _apply_extract_preset(self.extract_clean_preset.currentText())
+        self.extract_rembg.stateChanged.connect(lambda s: [
+            self.extract_clean_preset.setEnabled(s),
+            self.extract_clean.setEnabled(s),
+            self.extract_iso.setEnabled(s),
+            self.extract_internal.setEnabled(s)
+        ])
+        self.extract_clean_preset.setEnabled(self.extract_rembg.isChecked())
+        self.extract_clean.setEnabled(self.extract_rembg.isChecked())
+        self.extract_iso.setEnabled(self.extract_rembg.isChecked())
+        self.extract_internal.setEnabled(self.extract_rembg.isChecked())
         
         clean_grp.setLayout(cl)
         layout.addWidget(clean_grp)
@@ -3872,6 +4165,11 @@ class MainWindow(QWidget):
         self.beiou_gamma.setRange(0.5, 2.0)
         self.beiou_gamma.setSingleStep(0.1)
         pl.addWidget(self.beiou_gamma, 0, 6)
+        pl.addWidget(QLabel("清理预设:"), 0, 7)
+        self.beiou_clean_preset = QComboBox()
+        self.beiou_clean_preset.addItems(["关闭", "轻度", "标准", "强力", "自定义"])
+        self.beiou_clean_preset.setCurrentText("标准")
+        pl.addWidget(self.beiou_clean_preset, 0, 8)
         
         self.beiou_iso = QCheckBox("移除孤立色块")
         pl.addWidget(self.beiou_iso, 1, 0)
@@ -3889,6 +4187,59 @@ class MainWindow(QWidget):
         self.beiou_internal_area.setValue(100)
         self.beiou_internal_area.setRange(1, 10000)
         pl.addWidget(self.beiou_internal_area, 1, 5)
+        def _apply_beiou_preset(name: str):
+            if name == "关闭":
+                self.beiou_clean.setChecked(False)
+                self.beiou_iso.setChecked(False)
+                self.beiou_internal.setChecked(False)
+                self.beiou_feather.setValue(0)
+                self.beiou_blur.setValue(0)
+                self.beiou_gamma.setValue(1.0)
+                self.beiou_iso_area.setValue(10)
+                self.beiou_internal_area.setValue(50)
+                for w in [self.beiou_feather, self.beiou_blur, self.beiou_gamma, self.beiou_iso_area, self.beiou_internal_area]:
+                    w.setEnabled(False)
+            elif name == "轻度":
+                self.beiou_clean.setChecked(True)
+                self.beiou_iso.setChecked(True)
+                self.beiou_internal.setChecked(True)
+                self.beiou_feather.setValue(1)
+                self.beiou_blur.setValue(1)
+                self.beiou_gamma.setValue(1.0)
+                self.beiou_iso_area.setValue(20)
+                self.beiou_internal_area.setValue(80)
+                for w in [self.beiou_feather, self.beiou_blur, self.beiou_gamma, self.beiou_iso_area, self.beiou_internal_area]:
+                    w.setEnabled(False)
+            elif name == "标准":
+                self.beiou_clean.setChecked(True)
+                self.beiou_iso.setChecked(True)
+                self.beiou_internal.setChecked(True)
+                self.beiou_feather.setValue(1)
+                self.beiou_blur.setValue(1)
+                self.beiou_gamma.setValue(1.2)
+                self.beiou_iso_area.setValue(50)
+                self.beiou_internal_area.setValue(100)
+                for w in [self.beiou_feather, self.beiou_blur, self.beiou_gamma, self.beiou_iso_area, self.beiou_internal_area]:
+                    w.setEnabled(False)
+            elif name == "强力":
+                self.beiou_clean.setChecked(True)
+                self.beiou_iso.setChecked(True)
+                self.beiou_internal.setChecked(True)
+                self.beiou_feather.setValue(2)
+                self.beiou_blur.setValue(2)
+                self.beiou_gamma.setValue(1.3)
+                self.beiou_iso_area.setValue(150)
+                self.beiou_internal_area.setValue(200)
+                for w in [self.beiou_feather, self.beiou_blur, self.beiou_gamma, self.beiou_iso_area, self.beiou_internal_area]:
+                    w.setEnabled(False)
+            else:
+                self.beiou_clean.setChecked(True)
+                self.beiou_iso.setChecked(True)
+                self.beiou_internal.setChecked(True)
+                for w in [self.beiou_feather, self.beiou_blur, self.beiou_gamma, self.beiou_iso_area, self.beiou_internal_area]:
+                    w.setEnabled(True)
+        self.beiou_clean_preset.currentTextChanged.connect(_apply_beiou_preset)
+        _apply_beiou_preset(self.beiou_clean_preset.currentText())
         
         post_grp.setLayout(pl)
         layout.addWidget(post_grp)
@@ -4023,6 +4374,11 @@ class MainWindow(QWidget):
         self.gif_gamma.setRange(0.5, 2.0)
         self.gif_gamma.setSingleStep(0.1)
         cl.addWidget(self.gif_gamma, 0, 6)
+        cl.addWidget(QLabel("清理预设:"), 0, 7)
+        self.gif_clean_preset = QComboBox()
+        self.gif_clean_preset.addItems(["关闭", "轻度", "标准", "强力", "自定义"])
+        self.gif_clean_preset.setCurrentText("标准")
+        cl.addWidget(self.gif_clean_preset, 0, 8)
         
         self.gif_iso = QCheckBox("移除孤立色块")
         cl.addWidget(self.gif_iso, 1, 0)
@@ -4040,6 +4396,69 @@ class MainWindow(QWidget):
         self.gif_internal_area.setValue(100)
         self.gif_internal_area.setRange(1, 10000)
         cl.addWidget(self.gif_internal_area, 1, 5)
+        def _apply_gif_preset(name: str):
+            if name == "关闭":
+                self.gif_clean.setChecked(False)
+                self.gif_iso.setChecked(False)
+                self.gif_internal.setChecked(False)
+                self.gif_feather.setValue(0)
+                self.gif_blur.setValue(0)
+                self.gif_gamma.setValue(1.0)
+                self.gif_iso_area.setValue(10)
+                self.gif_internal_area.setValue(50)
+                for w in [self.gif_feather, self.gif_blur, self.gif_gamma, self.gif_iso_area, self.gif_internal_area]:
+                    w.setEnabled(False)
+            elif name == "轻度":
+                self.gif_clean.setChecked(True)
+                self.gif_iso.setChecked(True)
+                self.gif_internal.setChecked(True)
+                self.gif_feather.setValue(1)
+                self.gif_blur.setValue(1)
+                self.gif_gamma.setValue(1.0)
+                self.gif_iso_area.setValue(20)
+                self.gif_internal_area.setValue(80)
+                for w in [self.gif_feather, self.gif_blur, self.gif_gamma, self.gif_iso_area, self.gif_internal_area]:
+                    w.setEnabled(False)
+            elif name == "标准":
+                self.gif_clean.setChecked(True)
+                self.gif_iso.setChecked(True)
+                self.gif_internal.setChecked(True)
+                self.gif_feather.setValue(1)
+                self.gif_blur.setValue(1)
+                self.gif_gamma.setValue(1.2)
+                self.gif_iso_area.setValue(50)
+                self.gif_internal_area.setValue(100)
+                for w in [self.gif_feather, self.gif_blur, self.gif_gamma, self.gif_iso_area, self.gif_internal_area]:
+                    w.setEnabled(False)
+            elif name == "强力":
+                self.gif_clean.setChecked(True)
+                self.gif_iso.setChecked(True)
+                self.gif_internal.setChecked(True)
+                self.gif_feather.setValue(2)
+                self.gif_blur.setValue(2)
+                self.gif_gamma.setValue(1.3)
+                self.gif_iso_area.setValue(150)
+                self.gif_internal_area.setValue(200)
+                for w in [self.gif_feather, self.gif_blur, self.gif_gamma, self.gif_iso_area, self.gif_internal_area]:
+                    w.setEnabled(False)
+            else:
+                self.gif_clean.setChecked(True)
+                self.gif_iso.setChecked(True)
+                self.gif_internal.setChecked(True)
+                for w in [self.gif_feather, self.gif_blur, self.gif_gamma, self.gif_iso_area, self.gif_internal_area]:
+                    w.setEnabled(True)
+        self.gif_clean_preset.currentTextChanged.connect(_apply_gif_preset)
+        _apply_gif_preset(self.gif_clean_preset.currentText())
+        self.gif_rembg.stateChanged.connect(lambda s: [
+            self.gif_clean_preset.setEnabled(s),
+            self.gif_clean.setEnabled(s),
+            self.gif_iso.setEnabled(s),
+            self.gif_internal.setEnabled(s)
+        ])
+        self.gif_clean_preset.setEnabled(self.gif_rembg.isChecked())
+        self.gif_clean.setEnabled(self.gif_rembg.isChecked())
+        self.gif_iso.setEnabled(self.gif_rembg.isChecked())
+        self.gif_internal.setEnabled(self.gif_rembg.isChecked())
         
         self.gif_bg_type = QComboBox()
         self.gif_bg_type.addItems(["none", "color"])
@@ -4109,6 +4528,11 @@ class MainWindow(QWidget):
         self.single_gamma.setRange(0.5, 2.0)
         self.single_gamma.setSingleStep(0.1)
         ol.addWidget(self.single_gamma, 0, 6)
+        ol.addWidget(QLabel("清理预设:"), 0, 7)
+        self.single_clean_preset = QComboBox()
+        self.single_clean_preset.addItems(["关闭", "轻度", "标准", "强力", "自定义"])
+        self.single_clean_preset.setCurrentText("标准")
+        ol.addWidget(self.single_clean_preset, 0, 8)
         
         self.single_iso = QCheckBox("去杂色")
         ol.addWidget(self.single_iso, 1, 0)
@@ -4126,6 +4550,59 @@ class MainWindow(QWidget):
         self.single_internal_area.setValue(100)
         self.single_internal_area.setRange(1, 10000)
         ol.addWidget(self.single_internal_area, 1, 5)
+        def _apply_single_preset(name: str):
+            if name == "关闭":
+                self.single_clean.setChecked(False)
+                self.single_iso.setChecked(False)
+                self.single_internal.setChecked(False)
+                self.single_feather.setValue(0)
+                self.single_blur.setValue(0)
+                self.single_gamma.setValue(1.0)
+                self.single_iso_area.setValue(10)
+                self.single_internal_area.setValue(50)
+                for w in [self.single_feather, self.single_blur, self.single_gamma, self.single_iso_area, self.single_internal_area]:
+                    w.setEnabled(False)
+            elif name == "轻度":
+                self.single_clean.setChecked(True)
+                self.single_iso.setChecked(True)
+                self.single_internal.setChecked(True)
+                self.single_feather.setValue(1)
+                self.single_blur.setValue(1)
+                self.single_gamma.setValue(1.0)
+                self.single_iso_area.setValue(20)
+                self.single_internal_area.setValue(80)
+                for w in [self.single_feather, self.single_blur, self.single_gamma, self.single_iso_area, self.single_internal_area]:
+                    w.setEnabled(False)
+            elif name == "标准":
+                self.single_clean.setChecked(True)
+                self.single_iso.setChecked(True)
+                self.single_internal.setChecked(True)
+                self.single_feather.setValue(1)
+                self.single_blur.setValue(1)
+                self.single_gamma.setValue(1.2)
+                self.single_iso_area.setValue(50)
+                self.single_internal_area.setValue(100)
+                for w in [self.single_feather, self.single_blur, self.single_gamma, self.single_iso_area, self.single_internal_area]:
+                    w.setEnabled(False)
+            elif name == "强力":
+                self.single_clean.setChecked(True)
+                self.single_iso.setChecked(True)
+                self.single_internal.setChecked(True)
+                self.single_feather.setValue(2)
+                self.single_blur.setValue(2)
+                self.single_gamma.setValue(1.3)
+                self.single_iso_area.setValue(150)
+                self.single_internal_area.setValue(200)
+                for w in [self.single_feather, self.single_blur, self.single_gamma, self.single_iso_area, self.single_internal_area]:
+                    w.setEnabled(False)
+            else:
+                self.single_clean.setChecked(True)
+                self.single_iso.setChecked(True)
+                self.single_internal.setChecked(True)
+                for w in [self.single_feather, self.single_blur, self.single_gamma, self.single_iso_area, self.single_internal_area]:
+                    w.setEnabled(True)
+        self.single_clean_preset.currentTextChanged.connect(_apply_single_preset)
+        _apply_single_preset(self.single_clean_preset.currentText())
         
         self.single_bg_type = QComboBox()
         self.single_bg_type.addItems(["none", "color"])
@@ -4259,6 +4736,33 @@ class MainWindow(QWidget):
             f = QFileDialog.getExistingDirectory(self, "选择文件夹")
         if f: 
             edit_widget.setText(f)
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.accept()
+        else:
+            e.ignore()
+
+    def dropEvent(self, e):
+        try:
+            if not e.mimeData().hasUrls():
+                return
+            path = e.mimeData().urls()[0].toLocalFile()
+            idx = self.tabs.currentIndex()
+            if idx == 0:
+                self.sprite_path_edit.setText(path)
+            elif idx == 1:
+                self.extract_path_edit.setText(path)
+            elif idx == 2:
+                self.beiou_path_edit.setText(path)
+            elif idx == 3:
+                self.vid_src_edit.setText(path)
+            elif idx == 4:
+                self.gif_src_edit.setText(path)
+            elif idx == 5:
+                self.single_src_edit.setText(path)
+        except Exception:
+            pass
 
     def show_result_dialog(self, result):
         if isinstance(result, dict):
