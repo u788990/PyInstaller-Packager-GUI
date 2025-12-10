@@ -3,24 +3,26 @@
 PyInstaller>=6.0
 
 # 图像处理
-Pillow>=9.0
+Pillow>=10.3.0
 opencv-python>=4.5
-numpy>=1.20
+numpy>=1.26.4
 
 # 图像/视频 IO
-imageio>=2.9
-imageio-ffmpeg>=0.4
+imageio>=2.34.0
+imageio-ffmpeg>=0.4.9
 
 # 背景移除 (rembg) - CPU版本
-rembg>=2.0
-onnxruntime>=1.10
+rembg>=2.0.56
+onnxruntime>=1.17.3
 
 # PyQt5 GUI
-PyQt5>=5.15
+PyQt5>=5.15.10
 
 # 其他
 scipy>=1.7
 scikit-image>=0.18
+psutil==5.9.8
+certifi==2024.7.4
 
 # ========== 修复 jaraco 模块缺失 ==========
 jaraco.text
