@@ -158,6 +158,13 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject, QSize, QSignalBlocker
 from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QIcon, QPixmap, QImage, QPainter, QPen, QBrush
 
+if False:
+    import rembg
+    import rembg.sessions.u2net
+    import rembg.sessions.isnet
+    import onnxruntime
+    import onnxruntime.capi.onnxruntime_pybind11_state
+
 # ==================== 配置管理器 ====================
 class ConfigManager:
     """统一配置管理 - 所有路径都在 biemo 文件夹下"""
@@ -735,12 +742,6 @@ except ImportError:
     logger.error("✗ rembg 模块未安装")
 except Exception as e:
     logger.error(f"rembg 加载失败: {e}")
-
-if False:
-    import rembg
-    import rembg.sessions.u2net
-    import rembg.sessions.isnet
-    import onnxruntime
 
 # 执行硬件检测和模型扫描
 HardwareInfo.detect()
