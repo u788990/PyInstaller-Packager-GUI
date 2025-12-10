@@ -104,6 +104,20 @@ jobs:
         [void]$packArgs.Add("--mode")
         [void]$packArgs.Add("${{ inputs.pack_mode }}")
         
+        # ==============================================================
+        # 【重要修改】强制收集 rembg 和 onnxruntime 的所有依赖文件
+        #  解决了 "rembg 未安装" 和 "模型加载失败" 的问题
+        # ==============================================================
+        [void]$packArgs.Add("--collect-all")
+        [void]$packArgs.Add("rembg")
+        [void]$packArgs.Add("--collect-all")
+        [void]$packArgs.Add("onnxruntime")
+        [void]$packArgs.Add("--hidden-import")
+        [void]$packArgs.Add("onnxruntime")
+        [void]$packArgs.Add("--hidden-import")
+        [void]$packArgs.Add("rembg")
+        # ==============================================================
+
         # 隐藏控制台
         if ("${{ inputs.no_console }}" -eq "true") {
           [void]$packArgs.Add("--noconsole")
@@ -146,7 +160,7 @@ jobs:
         }
         
         Write-Host "=========================================="
-        Write-Host "Universal Cloud Packager v6.2"
+        Write-Host "Universal Cloud Packager v6.2 (Enhanced for AI)"
         Write-Host "=========================================="
         Write-Host "Source: ${{ inputs.source_file }}"
         Write-Host "Name: ${{ inputs.output_name }}"
