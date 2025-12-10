@@ -22,6 +22,8 @@ import queue
 import time
 import json
 import gc
+import urllib.request
+import urllib.error
 from pathlib import Path
 from datetime import datetime, date
 from io import BytesIO
@@ -150,7 +152,8 @@ from PyQt5.QtWidgets import (
     QTextEdit, QComboBox, QRadioButton, QButtonGroup, QGroupBox, QDoubleSpinBox,
     QTabWidget, QLineEdit, QDialog, QFrame, QToolTip, QSplitter, QPlainTextEdit,
     QListWidgetItem, QColorDialog, QTableWidget, QTableWidgetItem, QAbstractItemView,
-    QHeaderView, QSizePolicy, QSlider, QSpacerItem, QStackedWidget, QFormLayout
+    QHeaderView, QSizePolicy, QSlider, QSpacerItem, QStackedWidget, QFormLayout,
+    QProgressDialog
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject, QSize
 from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QIcon, QPixmap, QImage, QPainter, QPen, QBrush
@@ -253,6 +256,17 @@ class ConfigManager:
         base_path = paths.get(key, str(cls.BIEMO_BASE / f"output_{key}"))
         Path(base_path).mkdir(parents=True, exist_ok=True)
         return base_path
+
+    @classmethod
+    def get_tools_dir(cls):
+        p = cls.BIEMO_BASE / "tools"
+        p.mkdir(parents=True, exist_ok=True)
+        return str(p)
+
+    @classmethod
+    def get_tool_path(cls, name: str):
+        p = Path(cls.get_tools_dir()) / (name + (".exe" if os.name == "nt" else ""))
+        return str(p) if p.exists() else name
 
 ConfigManager.load()
 os.environ["U2NET_HOME"] = ConfigManager.get_model_dir()
@@ -524,6 +538,110 @@ class ModelManager:
         cls.save_models_config()
         logger.info(f"扫描完成: {found_count} 个模型")
         return cls._models_status
+
+    @classmethod
+    def ensure_model(cls, model_id: str, parent=None) -> bool:
+        if cls.check_model_exists(model_id):
+            return True
+        info = cls.MODELS.get(model_id, {})
+        if not info:
+            return False
+        model_dir = cls.get_model_dir()
+        model_dir.mkdir(parents=True, exist_ok=True)
+        expected = model_dir / info.get("file", f"{model_id}.onnx")
+        f, _ = QFileDialog.getOpenFileName(parent, "选择模型文件", "", "ONNX (*.onnx)")
+        if not f:
+            return False
+        try:
+            shutil.copyfile(f, str(expected))
+            size_mb = Path(expected).stat().st_size // (1024 * 1024)
+            cls._models_status[model_id] = {
+                "exists": True,
+                "file": expected.name,
+                "path": str(expected),
+                "size_mb": size_mb,
+                "scan_time": datetime.now().isoformat()
+            }
+            cls.save_models_config()
+            logger.success(f"模型已导入: {expected}")
+            return True
+        except Exception as e:
+            logger.error(f"模型导入失败: {e}")
+            return False
+
+    @classmethod
+    def download_model(cls, model_id: str, parent=None) -> bool:
+        info = cls.MODELS.get(model_id, {})
+        url = info.get("url")
+        if not url:
+            QMessageBox.information(parent, "提示", "该模型无在线地址，请手动导入")
+            return False
+        target = cls.get_model_dir() / info.get("file", f"{model_id}.onnx")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        exist_size = target.stat().st_size if target.exists() else 0
+        try:
+            req = urllib.request.Request(url)
+            if exist_size > 0:
+                req.add_header("Range", f"bytes={exist_size}-")
+            with urllib.request.urlopen(req) as resp:
+                total = resp.headers.get("Content-Length")
+                total = int(total) + exist_size if total else 0
+                cr = resp.headers.get("Content-Range")
+                if cr and "/" in cr:
+                    try:
+                        total = int(cr.split("/")[-1])
+                    except:
+                        pass
+                prog = QProgressDialog("下载模型...", "取消", 0, total if total > 0 else 0, parent)
+                prog.setWindowModality(Qt.WindowModal)
+                prog.setValue(exist_size if total > 0 else 0)
+                mode = "ab" if exist_size > 0 else "wb"
+                with open(target, mode) as f:
+                    read = exist_size
+                    while True:
+                        chunk = resp.read(64 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        read += len(chunk)
+                        if total > 0:
+                            prog.setValue(read)
+                        QApplication.processEvents()
+                        if prog.wasCanceled():
+                            return False
+                prog.setValue(total if total > 0 else 0)
+        except Exception as e:
+            logger.error(str(e))
+            QMessageBox.critical(parent, "错误", str(e))
+            return False
+        sha = info.get("sha256")
+        if sha:
+            try:
+                h = hashlib.sha256()
+                with open(target, "rb") as f:
+                    for b in iter(lambda: f.read(256 * 1024), b""):
+                        h.update(b)
+                if h.hexdigest().lower() != sha.lower():
+                    try:
+                        target.unlink()
+                    except:
+                        pass
+                    QMessageBox.critical(parent, "错误", "校验失败")
+                    return False
+            except Exception as e:
+                QMessageBox.critical(parent, "错误", str(e))
+                return False
+        size_mb = target.stat().st_size // (1024 * 1024)
+        cls._models_status[model_id] = {
+            "exists": True,
+            "file": target.name,
+            "path": str(target),
+            "size_mb": size_mb,
+            "scan_time": datetime.now().isoformat()
+        }
+        cls.save_models_config()
+        logger.success(f"模型已下载: {target}")
+        return True
     
     @classmethod
     def check_model_exists(cls, model_id: str) -> bool:
@@ -1716,7 +1834,25 @@ class ModelSelector(QComboBox):
             if exists:
                 logger.info(f"已选择模型: {info.get('name', model_id)}")
             else:
-                logger.warning(f"模型未下载，首次使用将自动下载")
+                m = QMessageBox(self.parent())
+                m.setWindowTitle("模型缺失")
+                m.setText("该模型尚未安装")
+                dl_btn = m.addButton("在线下载", QMessageBox.AcceptRole)
+                imp_btn = m.addButton("手动导入", QMessageBox.ActionRole)
+                cancel_btn = m.addButton("取消", QMessageBox.RejectRole)
+                m.exec_()
+                clicked = m.clickedButton()
+                try:
+                    ok = False
+                    if clicked == dl_btn:
+                        ok = ModelManager.download_model(model_id, parent=self.parent())
+                    elif clicked == imp_btn:
+                        ok = ModelManager.ensure_model(model_id, parent=self.parent())
+                    if ok:
+                        ModelManager.scan_models()
+                        self.refresh_models()
+                except Exception:
+                    pass
             
             if info.get("large"):
                 if HardwareInfo.has_sufficient_resources(info.get("size_mb", 900)):
@@ -2406,8 +2542,9 @@ class VideoRemoveBgWorker(BaseWorker):
                     macro_block_size=1
                 )
             else:
+                ffmpeg_bin = ConfigManager.get_tool_path('ffmpeg')
                 cmd = [
-                    'ffmpeg', '-y',
+                    ffmpeg_bin, '-y',
                     '-f', 'rawvideo',
                     '-vcodec', 'rawvideo',
                     '-pix_fmt', 'rgba',
