@@ -1,226 +1,47 @@
-name: Build EXE v6.2 (Fixed Icons)
-
-on:
-  workflow_dispatch:
-    inputs:
-      source_file:
-        description: 'Python main file'
-        required: true
-        default: 'main.py'
-        type: string
-      
-      output_name:
-        description: 'Output EXE name'
-        required: true
-        default: 'MyApp'
-        type: string
-      
-      pack_mode:
-        description: 'Pack mode'
-        required: true
-        default: 'onefile'
-        type: choice
-        options:
-          - onefile
-          - onedir
-      
-      no_console:
-        description: 'Hide console (GUI app)'
-        type: boolean
-        default: true
-      
-      exe_icon:
-        description: 'EXE icon file (e.g. 480x480.png)'
-        required: false
-        default: ''
-        type: string
-      
-      window_icon:
-        description: 'Window icon (e.g. 28x28.png)'
-        required: false
-        default: ''
-        type: string
-      
-      taskbar_icon:
-        description: 'Taskbar icon (e.g. 108x108.png)'
-        required: false
-        default: ''
-        type: string
-      
-      python_version:
-        description: 'Python version'
-        default: '3.11'
-        type: choice
-        options:
-          - '3.9'
-          - '3.10'
-          - '3.11'
-          - '3.12'
-
-jobs:
-  build:
-    runs-on: windows-latest
-    
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-    
-    - name: Setup Python ${{ inputs.python_version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ inputs.python_version }}
-        cache: 'pip'
-    
-    - name: Install base tools
+- name: Build with PyInstaller Direct
       run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller pillow
-      shell: pwsh
-    
-    - name: Install project dependencies
-      run: |
-        if (Test-Path "requirements.txt") {
-          Write-Host "Installing requirements.txt..."
-          pip install -r requirements.txt
-        }
-        if (Test-Path "requirements-build.txt") {
-          Write-Host "Installing requirements-build.txt..."
-          pip install -r requirements-build.txt
-        }
-        Write-Host "`nInstalled packages:"
-        pip list
-      shell: pwsh
-    
-    - name: Build with Universal Packager v6.2
-      run: |
-        # 使用不同的变量名避免与 PowerShell 内置 $args 冲突
-        $packArgs = [System.Collections.ArrayList]@()
+        Write-Host "Bypassing wrapper script, running PyInstaller directly..."
         
-        # 必需参数
-        [void]$packArgs.Add("--source")
-        [void]$packArgs.Add("${{ inputs.source_file }}")
-        [void]$packArgs.Add("--name")
-        [void]$packArgs.Add("${{ inputs.output_name }}")
-        [void]$packArgs.Add("--mode")
-        [void]$packArgs.Add("${{ inputs.pack_mode }}")
+        # 1. 构建基础命令
+        # --clean: 清理缓存
+        # -y: 覆盖输出目录
+        $cmd = 'pyinstaller "${{ inputs.source_file }}" --name "${{ inputs.output_name }}" --clean -y'
         
-        # ==============================================================
-        # 【重要修改】强制收集 rembg 和 onnxruntime 的所有依赖文件
-        #  解决了 "rembg 未安装" 和 "模型加载失败" 的问题
-        # ==============================================================
-        [void]$packArgs.Add("--collect-all")
-        [void]$packArgs.Add("rembg")
-        [void]$packArgs.Add("--collect-all")
-        [void]$packArgs.Add("onnxruntime")
-        [void]$packArgs.Add("--hidden-import")
-        [void]$packArgs.Add("onnxruntime")
-        [void]$packArgs.Add("--hidden-import")
-        [void]$packArgs.Add("rembg")
-        # ==============================================================
-
-        # 隐藏控制台
+        # 2. 设置打包模式 (onedir / onefile)
+        if ("${{ inputs.pack_mode }}" -eq "onedir") {
+            $cmd += " --onedir"
+        } else {
+            $cmd += " --onefile"
+        }
+        
+        # 3. 设置是否隐藏控制台
         if ("${{ inputs.no_console }}" -eq "true") {
-          [void]$packArgs.Add("--noconsole")
+            $cmd += " --noconsole"
         }
         
-        # EXE 图标
+        # 4. 【关键修复】强制收集 AI 依赖库
+        # 这就是之前报错的原因，现在直接传给 pyinstaller 就不会报错了
+        $cmd += " --collect-all rembg --collect-all onnxruntime --hidden-import onnxruntime --hidden-import rembg"
+        
+        # 5. 设置图标 (只设置主图标，防止格式不兼容)
         $exeIcon = "${{ inputs.exe_icon }}".Trim()
-        if ($exeIcon -ne "" -and $exeIcon -ne "null") {
-          if (Test-Path $exeIcon) {
-            Write-Host "Found EXE icon: $exeIcon"
-            [void]$packArgs.Add("--exe-icon")
-            [void]$packArgs.Add($exeIcon)
-          } else {
-            Write-Host "WARNING: EXE icon not found: $exeIcon"
-          }
+        if ($exeIcon -ne "" -and (Test-Path $exeIcon)) {
+            # PyInstaller 在 Windows 上最好使用 .ico，如果是 .png 可能会有警告但通常也能用
+            $cmd += " --icon `"$exeIcon`""
         }
         
-        # 窗口图标
-        $windowIcon = "${{ inputs.window_icon }}".Trim()
-        if ($windowIcon -ne "" -and $windowIcon -ne "null") {
-          if (Test-Path $windowIcon) {
-            Write-Host "Found Window icon: $windowIcon"
-            [void]$packArgs.Add("--window-icon")
-            [void]$packArgs.Add($windowIcon)
-          } else {
-            Write-Host "WARNING: Window icon not found: $windowIcon"
-          }
-        }
-        
-        # 任务栏图标
-        $taskbarIcon = "${{ inputs.taskbar_icon }}".Trim()
-        if ($taskbarIcon -ne "" -and $taskbarIcon -ne "null") {
-          if (Test-Path $taskbarIcon) {
-            Write-Host "Found Taskbar icon: $taskbarIcon"
-            [void]$packArgs.Add("--taskbar-icon")
-            [void]$packArgs.Add($taskbarIcon)
-          } else {
-            Write-Host "WARNING: Taskbar icon not found: $taskbarIcon"
-          }
-        }
-        
+        # 6. 打印最终命令以便调试
         Write-Host "=========================================="
-        Write-Host "Universal Cloud Packager v6.2 (Enhanced for AI)"
-        Write-Host "=========================================="
-        Write-Host "Source: ${{ inputs.source_file }}"
-        Write-Host "Name: ${{ inputs.output_name }}"
-        Write-Host "Mode: ${{ inputs.pack_mode }}"
-        Write-Host "No Console: ${{ inputs.no_console }}"
-        Write-Host "EXE Icon: $exeIcon"
-        Write-Host "Window Icon: $windowIcon"
-        Write-Host "Taskbar Icon: $taskbarIcon"
-        Write-Host "=========================================="
-        Write-Host "Full command arguments:"
-        Write-Host ($packArgs -join " ")
+        Write-Host "Executing Command:"
+        Write-Host $cmd
         Write-Host "=========================================="
         
-        # 执行打包
-        & python cloud_packager_v61.py @packArgs
+        # 7. 执行命令
+        Invoke-Expression $cmd
         
+        # 8. 错误检查
         if ($LASTEXITCODE -ne 0) {
-          Write-Host "Build failed with exit code: $LASTEXITCODE"
-          exit $LASTEXITCODE
+            Write-Host "Build failed with exit code: $LASTEXITCODE"
+            exit $LASTEXITCODE
         }
       shell: pwsh
-    
-    - name: Verify output
-      run: |
-        $mode = "${{ inputs.pack_mode }}"
-        $name = "${{ inputs.output_name }}"
-        
-        if ($mode -eq "onefile") {
-          $exePath = "dist\$name.exe"
-        } else {
-          $exePath = "dist\$name\$name.exe"
-        }
-        
-        if (Test-Path $exePath) {
-          $size = (Get-Item $exePath).Length / 1MB
-          Write-Host "=========================================="
-          Write-Host "BUILD SUCCESS!"
-          Write-Host "=========================================="
-          Write-Host "EXE: $exePath"
-          Write-Host "Size: $([math]::Round($size, 2)) MB"
-        } else {
-          Write-Host "BUILD FAILED - Output not found"
-          Write-Host "=== dist folder contents ==="
-          Get-ChildItem -Path "dist" -Recurse -ErrorAction SilentlyContinue
-          exit 1
-        }
-      shell: pwsh
-    
-    - name: Upload artifact (onefile)
-      if: inputs.pack_mode == 'onefile'
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ inputs.output_name }}-exe
-        path: dist/${{ inputs.output_name }}.exe
-        retention-days: 7
-    
-    - name: Upload artifact (onedir)
-      if: inputs.pack_mode == 'onedir'
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ inputs.output_name }}-dist
-        path: dist/${{ inputs.output_name }}/
-        retention-days: 7
