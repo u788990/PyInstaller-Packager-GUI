@@ -1,707 +1,410 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-通用云打包器 v6.4 - 完整修复版
-
-修复内容：
-1. v6.2: 使用 .spec 文件代替超长命令行
-2. v6.3: 完整图标支持 PyQt5/PyQt6/PySide6/Tkinter/Pygame
-3. v6.4: 修复 EXE 图标丢失问题（spec 文件格式修正）
+云打包工具 v61 - 修复版
+支持自动检测和处理特殊库（如rembg）的打包需求
 """
 
-import sys
 import os
-
-os.environ['PYTHONIOENCODING'] = 'utf-8'
-os.environ['PYTHONUTF8'] = '1'
-
-if sys.platform == 'win32':
-    try:
-        import subprocess
-        subprocess.run(['chcp', '65001'], shell=True, capture_output=True)
-    except:
-        pass
-    try:
-        import io
-        if hasattr(sys.stdout, 'buffer'):
-            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
-        if hasattr(sys.stderr, 'buffer'):
-            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
-    except:
-        pass
-
-import ast
-import re
-import time
-import glob
+import sys
+import yaml
+import subprocess
 import shutil
-import tempfile
 from pathlib import Path
-from typing import Set, List, Tuple, Optional
+from typing import List, Dict, Optional
+
+# ==================== 特殊库配置 ====================
+# 定义需要特殊处理的库及其打包参数
+SPECIAL_LIBRARIES = {
+    'rembg': {
+        'collect_all': ['rembg', 'onnxruntime'],
+        'hidden_imports': [
+            'rembg',
+            'rembg.bg',
+            'rembg.session_factory',
+            'rembg.sessions',
+            'rembg.sessions.u2net',
+            'rembg.sessions.u2netp',
+            'rembg.sessions.u2net_human_seg',
+            'rembg.sessions.u2net_cloth_seg',
+            'rembg.sessions.silueta',
+            'rembg.sessions.isnet_general_use',
+            'rembg.sessions.sam',
+            'onnxruntime',
+            'onnxruntime.capi',
+            'onnxruntime.capi._pybind_state',
+            'onnxruntime.capi.onnxruntime_pybind11_state',
+        ],
+        'description': 'AI图像背景移除库'
+    },
+    'paddleocr': {
+        'collect_all': ['paddleocr', 'paddle'],
+        'hidden_imports': [
+            'paddleocr',
+            'paddle',
+            'paddle.vision',
+        ],
+        'description': 'OCR文字识别库'
+    },
+    'transformers': {
+        'collect_all': ['transformers'],
+        'hidden_imports': [
+            'transformers',
+            'transformers.models',
+        ],
+        'description': 'Hugging Face模型库'
+    },
+    'torch': {
+        'collect_all': ['torch', 'torchvision'],
+        'hidden_imports': [
+            'torch',
+            'torch._C',
+            'torch._VF',
+            'torchvision',
+        ],
+        'description': 'PyTorch深度学习框架'
+    },
+    'tensorflow': {
+        'collect_all': ['tensorflow'],
+        'hidden_imports': [
+            'tensorflow',
+            'tensorflow.python',
+        ],
+        'description': 'TensorFlow深度学习框架'
+    },
+}
 
 
-def safe_print(msg: str):
+# ==================== 辅助函数 ====================
+
+def detect_special_libraries(script_path: str) -> List[str]:
+    """
+    检测脚本中使用的特殊库
+    
+    Args:
+        script_path: Python脚本路径
+        
+    Returns:
+        检测到的特殊库名称列表
+    """
+    detected = []
+    
+    if not os.path.exists(script_path):
+        print(f"[WARNING] 脚本文件不存在: {script_path}")
+        return detected
+    
     try:
-        print(msg, flush=True)
-    except UnicodeEncodeError:
-        print(msg.encode('ascii', errors='replace').decode('ascii'), flush=True)
+        with open(script_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            
+        for lib_name in SPECIAL_LIBRARIES.keys():
+            # 检测 import 语句
+            if f'import {lib_name}' in content or f'from {lib_name}' in content:
+                detected.append(lib_name)
+                lib_desc = SPECIAL_LIBRARIES[lib_name].get('description', '')
+                print(f"[INFO] 检测到特殊库: {lib_name} ({lib_desc})")
+                
+    except Exception as e:
+        print(f"[WARNING] 检测库时出错: {e}")
+        
+    return detected
 
 
-class UniversalCloudPackager:
+def add_special_library_options(cmd: List[str], libraries: List[str]) -> List[str]:
+    """
+    为特殊库添加打包选项
     
-    STDLIB = {
-        'abc', 'aifc', 'argparse', 'array', 'ast', 'asynchat', 'asyncio', 
-        'asyncore', 'atexit', 'audioop', 'base64', 'bdb', 'binascii', 'binhex',
-        'bisect', 'builtins', 'bz2', 'calendar', 'cgi', 'cgitb', 'chunk', 
-        'cmath', 'cmd', 'code', 'codecs', 'codeop', 'collections', 'colorsys',
-        'compileall', 'concurrent', 'configparser', 'contextlib', 'contextvars',
-        'copy', 'copyreg', 'cProfile', 'crypt', 'csv', 'ctypes', 'curses',
-        'dataclasses', 'datetime', 'dbm', 'decimal', 'difflib', 'dis', 
-        'distutils', 'doctest', 'email', 'encodings', 'enum', 'errno',
-        'faulthandler', 'fcntl', 'filecmp', 'fileinput', 'fnmatch', 'fractions',
-        'ftplib', 'functools', 'gc', 'getopt', 'getpass', 'gettext', 'glob',
-        'graphlib', 'grp', 'gzip', 'hashlib', 'heapq', 'hmac', 'html', 'http',
-        'idlelib', 'imaplib', 'imghdr', 'imp', 'importlib', 'inspect', 'io',
-        'ipaddress', 'itertools', 'json', 'keyword', 'lib2to3', 'linecache',
-        'locale', 'logging', 'lzma', 'mailbox', 'mailcap', 'marshal', 'math',
-        'mimetypes', 'mmap', 'modulefinder', 'multiprocessing', 'netrc', 'nis',
-        'nntplib', 'numbers', 'operator', 'optparse', 'os', 'ossaudiodev',
-        'pathlib', 'pdb', 'pickle', 'pickletools', 'pipes', 'pkgutil', 
-        'platform', 'plistlib', 'poplib', 'posix', 'posixpath', 'pprint',
-        'profile', 'pstats', 'pty', 'pwd', 'py_compile', 'pyclbr', 'pydoc',
-        'queue', 'quopri', 'random', 're', 'readline', 'reprlib', 'resource',
-        'rlcompleter', 'runpy', 'sched', 'secrets', 'select', 'selectors',
-        'shelve', 'shlex', 'shutil', 'signal', 'site', 'smtpd', 'smtplib',
-        'sndhdr', 'socket', 'socketserver', 'spwd', 'sqlite3', 'ssl', 'stat',
-        'statistics', 'string', 'stringprep', 'struct', 'subprocess', 'sunau',
-        'symtable', 'sys', 'sysconfig', 'syslog', 'tabnanny', 'tarfile',
-        'telnetlib', 'tempfile', 'termios', 'test', 'textwrap', 'threading',
-        'time', 'timeit', 'tkinter', 'token', 'tokenize', 'tomllib', 'trace',
-        'traceback', 'tracemalloc', 'tty', 'turtle', 'turtledemo', 'types',
-        'typing', 'unicodedata', 'unittest', 'urllib', 'uu', 'uuid', 'venv',
-        'warnings', 'wave', 'weakref', 'webbrowser', 'winreg', 'winsound',
-        'wsgiref', 'xdrlib', 'xml', 'xmlrpc', 'zipapp', 'zipfile', 'zipimport',
-        'zlib', '_thread', '__future__', '__main__',
-    }
-    
-    LARGE_PACKAGES = {
-        'torch', 'torchvision', 'torchaudio', 'tensorflow', 'keras',
-        'numpy', 'scipy', 'pandas', 'cv2', 'PIL', 'skimage',
-        'onnxruntime', 'onnx', 'sklearn', 'xgboost', 'lightgbm',
-        'matplotlib', 'plotly', 'seaborn', 'transformers', 'diffusers',
-        'rembg', 'imageio', 'PyQt5', 'PyQt6', 'PySide2', 'PySide6',
-        'wx', 'kivy', 'psutil',
-    }
-    
-    ALWAYS_EXCLUDE = [
-        'numpy.array_api', 'numpy.distutils', 'numpy.f2py', 'numpy.testing',
-        'scipy.testing', 'matplotlib.testing', 'matplotlib.tests',
-        'torch.testing', 'torch.utils.benchmark',
-        'IPython', 'jupyter', 'notebook', 'pytest', 'sphinx',
-        'setuptools', 'pip', 'wheel', 'twine', 'black', 'flake8', 'pylint',
-        'mypy', 'isort', 'autopep8', 'coverage', 'tox',
-    ]
-    
-    CORE_HIDDEN_IMPORTS = [
-        'pkg_resources', 'pkg_resources.py2_warn', 
-        'importlib_resources', 'importlib_metadata',
-        'encodings.utf_8', 'encodings.gbk', 'encodings.cp1252',
-        'encodings.ascii', 'encodings.latin_1', 'encodings.idna',
-        'atexit', 'packaging', 'packaging.version', 'packaging.specifiers',
-    ]
-    
-    def __init__(self, source: str, name: str, mode: str = 'onefile',
-                 noconsole: bool = False, exe_icon: str = None,
-                 window_icon: str = None, taskbar_icon: str = None,
-                 extra_data: List[str] = None, cleanup_temp: bool = True):
-        self.source = source
-        self.name = name
-        self.mode = mode
-        self.noconsole = noconsole
-        self.exe_icon = exe_icon
-        self.window_icon = window_icon
-        self.taskbar_icon = taskbar_icon
-        self.extra_data = extra_data or []
-        self.cleanup_temp = cleanup_temp
+    Args:
+        cmd: PyInstaller命令列表
+        libraries: 检测到的特殊库列表
         
-        self.python = sys.executable
-        self.source_dir = os.path.dirname(os.path.abspath(source)) or '.'
-        
-        self._temp_files = []
-        self._detected_imports: Set[str] = set()
+    Returns:
+        添加了特殊选项的命令列表
+    """
+    if not libraries:
+        return cmd
     
-    def log(self, msg: str, level: str = "INFO"):
-        prefix = {"INFO": "[Pack]", "WARN": "[WARN]", "ERROR": "[ERR]"}
-        safe_print(f"{prefix.get(level, '[Pack]')} {msg}")
+    print(f"\n[INFO] 为 {len(libraries)} 个特殊库添加打包参数...")
     
-    def prepare_exe_icon(self) -> Optional[str]:
-        """准备 EXE 图标（PNG 转 ICO）"""
-        if not self.exe_icon:
-            self.log("No EXE icon specified")
-            return None
+    for lib in libraries:
+        config = SPECIAL_LIBRARIES.get(lib, {})
         
-        icon_path = os.path.abspath(self.exe_icon)
-        if not os.path.exists(icon_path):
-            self.log(f"EXE icon not found: {icon_path}", "WARN")
-            return None
+        # 添加 --collect-all 参数
+        for module in config.get('collect_all', []):
+            print(f"  └─ --collect-all {module}")
+            cmd.extend(['--collect-all', module])
         
-        self.log(f"Processing EXE icon: {icon_path}")
+        # 添加 --hidden-import 参数
+        for module in config.get('hidden_imports', []):
+            print(f"  └─ --hidden-import {module}")
+            cmd.extend(['--hidden-import', module])
+    
+    print()
+    return cmd
+
+
+def load_config(config_file: str = 'build-v61.yml') -> Dict:
+    """
+    加载YAML配置文件
+    
+    Args:
+        config_file: 配置文件路径
         
-        # 如果是 ICO 直接使用
-        if icon_path.lower().endswith('.ico'):
-            self.log(f"Using ICO directly: {icon_path}")
-            return icon_path
+    Returns:
+        配置字典
+    """
+    try:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        print(f"[INFO] 成功加载配置文件: {config_file}")
+        return config
+    except FileNotFoundError:
+        print(f"[ERROR] 配置文件不存在: {config_file}")
+        sys.exit(1)
+    except yaml.YAMLError as e:
+        print(f"[ERROR] 配置文件格式错误: {e}")
+        sys.exit(1)
+
+
+def build_pyinstaller_command(config: Dict, detected_libs: List[str]) -> List[str]:
+    """
+    构建PyInstaller打包命令
+    
+    Args:
+        config: 配置字典
+        detected_libs: 检测到的特殊库列表
         
-        # PNG 转 ICO
-        if icon_path.lower().endswith('.png'):
+    Returns:
+        完整的命令列表
+    """
+    cmd = ['pyinstaller']
+    
+    # 基础选项
+    script = config.get('script')
+    if not script:
+        print("[ERROR] 配置文件中未指定script")
+        sys.exit(1)
+    
+    # 清理旧的构建文件
+    cmd.append('--clean')
+    cmd.append('--noconfirm')
+    
+    # 从配置文件读取选项
+    options = config.get('pyinstaller_options', {})
+    
+    # 单文件模式
+    if options.get('onefile', False):
+        cmd.append('-F')
+    else:
+        cmd.append('-D')
+    
+    # 无控制台窗口
+    if options.get('noconsole', False):
+        cmd.append('-w')
+    
+    # 图标
+    icon = options.get('icon')
+    if icon and os.path.exists(icon):
+        cmd.extend(['--icon', icon])
+    
+    # 输出名称
+    name = options.get('name')
+    if name:
+        cmd.extend(['--name', name])
+    
+    # 添加数据文件
+    datas = options.get('datas', [])
+    for data in datas:
+        if isinstance(data, dict):
+            src = data.get('src')
+            dst = data.get('dst', '.')
+            if src and os.path.exists(src):
+                separator = ';' if sys.platform == 'win32' else ':'
+                cmd.extend(['--add-data', f'{src}{separator}{dst}'])
+    
+    # 添加二进制文件
+    binaries = options.get('binaries', [])
+    for binary in binaries:
+        if isinstance(binary, dict):
+            src = binary.get('src')
+            dst = binary.get('dst', '.')
+            if src and os.path.exists(src):
+                separator = ';' if sys.platform == 'win32' else ':'
+                cmd.extend(['--add-binary', f'{src}{separator}{dst}'])
+    
+    # 配置文件中的 collect-all
+    collect_all_list = options.get('collect_all', [])
+    for module in collect_all_list:
+        cmd.extend(['--collect-all', module])
+    
+    # 配置文件中的 hidden-imports
+    hidden_imports = options.get('hidden_imports', [])
+    for module in hidden_imports:
+        cmd.extend(['--hidden-import', module])
+    
+    # 排除的模块
+    excludes = options.get('excludes', [])
+    for module in excludes:
+        cmd.extend(['--exclude-module', module])
+    
+    # UPX压缩
+    if options.get('upx', False):
+        cmd.append('--upx-dir')
+        cmd.append(options.get('upx_dir', 'upx'))
+    
+    # 添加hooks目录
+    hooks_dir = options.get('hooks_dir')
+    if hooks_dir and os.path.exists(hooks_dir):
+        cmd.extend(['--additional-hooks-dir', hooks_dir])
+    
+    # === 关键：添加检测到的特殊库的参数 ===
+    cmd = add_special_library_options(cmd, detected_libs)
+    
+    # 最后添加脚本文件
+    cmd.append(script)
+    
+    return cmd
+
+
+def clean_build_folders():
+    """清理构建文件夹"""
+    folders_to_clean = ['build', 'dist', '__pycache__']
+    
+    for folder in folders_to_clean:
+        if os.path.exists(folder):
             try:
-                from PIL import Image
-                self.log("Converting PNG to ICO...")
-                
-                img = Image.open(icon_path)
-                if img.mode != 'RGBA':
-                    img = img.convert('RGBA')
-                
-                # 放在当前目录，避免路径问题
-                ico_path = os.path.abspath(f"{self.name}_icon.ico")
-                sizes = [(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
-                img.save(ico_path, format='ICO', sizes=sizes)
-                
-                self._temp_files.append(ico_path)
-                self.log(f"Created ICO: {ico_path}")
-                return ico_path
-                
+                shutil.rmtree(folder)
+                print(f"[INFO] 已清理: {folder}")
             except Exception as e:
-                self.log(f"ICO conversion failed: {e}", "WARN")
-                return None
-        
-        self.log(f"Unsupported icon format: {icon_path}", "WARN")
-        return None
+                print(f"[WARNING] 清理失败 {folder}: {e}")
+
+
+def run_packaging(cmd: List[str]) -> bool:
+    """
+    执行打包命令
     
-    def create_icon_wrapper(self) -> Optional[str]:
-        """创建包含图标 Hook 的包装器"""
-        encodings_to_try = ['utf-8', 'gbk', 'cp1252', 'latin-1']
-        original_code = None
+    Args:
+        cmd: 命令列表
         
-        for enc in encodings_to_try:
-            try:
-                with open(self.source, 'r', encoding=enc) as f:
-                    original_code = f.read()
-                break
-            except:
-                continue
-        
-        if original_code is None:
-            self.log("Failed to read source file", "ERROR")
-            return None
-        
-        window_icon_name = os.path.basename(self.window_icon) if self.window_icon else ''
-        
-        cleanup_code = ''
-        if self.mode == 'onefile' and self.cleanup_temp:
-            cleanup_code = '''
-import sys, os, atexit, shutil, time
-def _cleanup_meipass():
-    if hasattr(sys, '_MEIPASS'):
-        try:
-            time.sleep(0.3)
-            shutil.rmtree(sys._MEIPASS, ignore_errors=True)
-        except: pass
-if hasattr(sys, '_MEIPASS'):
-    atexit.register(_cleanup_meipass)
-'''
-        
-        icon_code = f'''
-# ==================== Icon Setup v6.4 ====================
-import sys
-import os
-
-_WINDOW_ICON = "{window_icon_name}"
-_APP_NAME = "{self.name}"
-
-def _get_resource_path(filename):
-    if not filename:
-        return None
-    if hasattr(sys, '_MEIPASS'):
-        path = os.path.join(sys._MEIPASS, filename)
-        if os.path.exists(path):
-            return path
-    base = os.path.dirname(os.path.abspath(__file__))
-    for candidate in [os.path.join(base, filename), os.path.join(os.getcwd(), filename), filename]:
-        if os.path.exists(candidate):
-            return os.path.abspath(candidate)
-    return None
-
-# Windows Taskbar
-if sys.platform == 'win32':
+    Returns:
+        是否成功
+    """
+    print("\n" + "="*60)
+    print("开始打包...")
+    print("="*60)
+    print(f"命令: {' '.join(cmd)}\n")
+    
     try:
-        import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(f'{{_APP_NAME}}.App.1.0')
-    except: pass
-
-# PyQt5
-try:
-    from PyQt5 import QtWidgets, QtGui
-    _orig_qapp = QtWidgets.QApplication.__init__
-    def _new_qapp(self, *args, **kwargs):
-        _orig_qapp(self, *args, **kwargs)
-        try:
-            icon_path = _get_resource_path(_WINDOW_ICON)
-            if icon_path and os.path.exists(icon_path):
-                self.setWindowIcon(QtGui.QIcon(icon_path))
-        except: pass
-    QtWidgets.QApplication.__init__ = _new_qapp
-    
-    _orig_qmain = QtWidgets.QMainWindow.__init__
-    def _new_qmain(self, *args, **kwargs):
-        _orig_qmain(self, *args, **kwargs)
-        try:
-            icon_path = _get_resource_path(_WINDOW_ICON)
-            if icon_path and os.path.exists(icon_path):
-                self.setWindowIcon(QtGui.QIcon(icon_path))
-        except: pass
-    QtWidgets.QMainWindow.__init__ = _new_qmain
-    
-    _orig_qwidget_show = QtWidgets.QWidget.show
-    def _new_qwidget_show(self):
-        try:
-            if not self.windowIcon() or self.windowIcon().isNull():
-                icon_path = _get_resource_path(_WINDOW_ICON)
-                if icon_path and os.path.exists(icon_path):
-                    self.setWindowIcon(QtGui.QIcon(icon_path))
-        except: pass
-        return _orig_qwidget_show(self)
-    QtWidgets.QWidget.show = _new_qwidget_show
-except ImportError:
-    pass
-
-# PyQt6
-try:
-    from PyQt6 import QtWidgets as QtWidgets6, QtGui as QtGui6
-    _orig_qapp6 = QtWidgets6.QApplication.__init__
-    def _new_qapp6(self, *args, **kwargs):
-        _orig_qapp6(self, *args, **kwargs)
-        try:
-            icon_path = _get_resource_path(_WINDOW_ICON)
-            if icon_path and os.path.exists(icon_path):
-                self.setWindowIcon(QtGui6.QIcon(icon_path))
-        except: pass
-    QtWidgets6.QApplication.__init__ = _new_qapp6
-except ImportError:
-    pass
-
-# PySide6
-try:
-    from PySide6 import QtWidgets as PySide6Widgets, QtGui as PySide6Gui
-    _orig_pyside6 = PySide6Widgets.QApplication.__init__
-    def _new_pyside6(self, *args, **kwargs):
-        _orig_pyside6(self, *args, **kwargs)
-        try:
-            icon_path = _get_resource_path(_WINDOW_ICON)
-            if icon_path and os.path.exists(icon_path):
-                self.setWindowIcon(PySide6Gui.QIcon(icon_path))
-        except: pass
-    PySide6Widgets.QApplication.__init__ = _new_pyside6
-except ImportError:
-    pass
-
-# Tkinter
-try:
-    import tkinter as tk
-    _orig_tk = tk.Tk.__init__
-    def _new_tk(self, *args, **kwargs):
-        _orig_tk(self, *args, **kwargs)
-        try:
-            icon_path = _get_resource_path(_WINDOW_ICON)
-            if icon_path and os.path.exists(icon_path):
-                if icon_path.lower().endswith('.png'):
-                    photo = tk.PhotoImage(file=icon_path)
-                    self.iconphoto(True, photo)
-                    self._icon_ref = photo
-                elif icon_path.lower().endswith('.ico'):
-                    self.iconbitmap(icon_path)
-        except: pass
-    tk.Tk.__init__ = _new_tk
-except ImportError:
-    pass
-
-# Pygame
-try:
-    import pygame
-    _orig_pg_init = pygame.init
-    def _new_pg_init(*args, **kwargs):
-        result = _orig_pg_init(*args, **kwargs)
-        try:
-            icon_path = _get_resource_path(_WINDOW_ICON)
-            if icon_path and os.path.exists(icon_path):
-                pygame.display.set_icon(pygame.image.load(icon_path))
-        except: pass
-        return result
-    pygame.init = _new_pg_init
-except ImportError:
-    pass
-
-# ==================== Original Code ====================
-'''
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding='utf-8',
+            errors='ignore'
+        )
         
-        wrapper_code = cleanup_code + icon_code + '\n' + original_code
+        # 实时输出
+        print(result.stdout)
         
-        wrapper_file = os.path.abspath(f"wrapper_{self.name}_{int(time.time())}.py")
-        with open(wrapper_file, 'w', encoding='utf-8') as f:
-            f.write(wrapper_code)
-        
-        self._temp_files.append(wrapper_file)
-        self.log("Created wrapper with icon hooks")
-        return wrapper_file
-    
-    def analyze_imports(self) -> Set[str]:
-        imports = set()
-        code = None
-        
-        for enc in ['utf-8', 'gbk', 'cp1252', 'latin-1']:
-            try:
-                with open(self.source, 'r', encoding=enc) as f:
-                    code = f.read()
-                break
-            except:
-                continue
-        
-        if code is None:
-            return imports
-        
-        try:
-            tree = ast.parse(code)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        imports.add(alias.name.split('.')[0])
-                elif isinstance(node, ast.ImportFrom):
-                    if node.module:
-                        imports.add(node.module.split('.')[0])
-        except:
-            pass
-        
-        for pat in [r'^import\s+([\w]+)', r'^from\s+([\w]+)']:
-            for m in re.finditer(pat, code, re.MULTILINE):
-                imports.add(m.group(1))
-        
-        return {imp for imp in imports if imp not in self.STDLIB}
-    
-    def prepare_dependencies(self) -> Tuple[Set[str], Set[str]]:
-        imports = self.analyze_imports()
-        self.log(f"Found {len(imports)} imports: {', '.join(sorted(imports)[:10])}...")
-        
-        collect = {'pkg_resources'}
-        hidden = set(self.CORE_HIDDEN_IMPORTS)
-        
-        for imp in imports:
-            if imp in self.LARGE_PACKAGES:
-                collect.add(imp)
-            else:
-                hidden.add(imp)
-        
-        if 'PyQt5' in imports:
-            collect.add('PyQt5')
-            hidden.add('PyQt5.sip')
-        
-        return hidden, collect
-    
-    def collect_data_files(self) -> List[Tuple[str, str]]:
-        data = []
-        collected = set()
-        
-        # 添加窗口/任务栏图标
-        for icon in [self.window_icon, self.taskbar_icon]:
-            if icon and os.path.exists(icon):
-                abs_path = os.path.abspath(icon)
-                if abs_path not in collected:
-                    data.append((abs_path, '.'))
-                    collected.add(abs_path)
-                    self.log(f"Adding data: {os.path.basename(icon)}")
-        
-        # 其他资源文件
-        for ext in ['*.png', '*.jpg', '*.ico', '*.json', '*.yaml', '*.txt', '*.wav', '*.mp3', '*.ttf', '*.onnx', '*.pth']:
-            for f in glob.glob(os.path.join(self.source_dir, ext)):
-                if os.path.isfile(f):
-                    abs_path = os.path.abspath(f)
-                    if abs_path not in collected:
-                        data.append((abs_path, '.'))
-                        collected.add(abs_path)
-        
-        for d in ['assets', 'resources', 'data', 'models', 'images']:
-            path = os.path.join(self.source_dir, d)
-            if os.path.isdir(path):
-                data.append((os.path.abspath(path), d))
-        
-        return data
-    
-    def generate_spec_file(self, source: str, hidden: Set[str], collect: Set[str],
-                           data_files: List[Tuple[str, str]], ico_path: Optional[str]) -> str:
-        """生成 spec 文件 - v6.4 修复 EXE 图标"""
-        
-        # 转义路径中的反斜杠
-        def escape_path(p):
-            return p.replace('\\', '\\\\') if p else ''
-        
-        source_escaped = escape_path(source)
-        
-        # 数据文件
-        datas_lines = []
-        for src, dst in data_files:
-            datas_lines.append(f"        (r'{escape_path(src)}', r'{dst}'),")
-        datas_str = '\n'.join(datas_lines)
-        
-        # 隐藏导入
-        hidden_list = sorted(list(hidden))[:200]
-        hidden_lines = [f"        '{h}'," for h in hidden_list]
-        hidden_str = '\n'.join(hidden_lines)
-        
-        # collect_submodules
-        collect_lines = [f"        *collect_submodules('{pkg}')," for pkg in sorted(collect)]
-        collect_str = '\n'.join(collect_lines)
-        
-        # 排除模块
-        excludes_lines = [f"        '{e}'," for e in self.ALWAYS_EXCLUDE]
-        excludes_str = '\n'.join(excludes_lines)
-        
-        # EXE 图标 - v6.4 关键修复
-        if ico_path and os.path.exists(ico_path):
-            icon_param = f"icon=r'{escape_path(ico_path)}',"
-            self.log(f"EXE icon set: {ico_path}")
+        if result.returncode == 0:
+            print("\n" + "="*60)
+            print("✓ 打包成功！")
+            print("="*60)
+            return True
         else:
-            icon_param = ""
-            self.log("No EXE icon set")
-        
-        # 根据模式生成不同的 EXE 配置
-        if self.mode == 'onefile':
-            exe_section = f'''
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    [],
-    name='{self.name}',
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console={not self.noconsole},
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    {icon_param}
-)
-'''
-        else:
-            exe_section = f'''
-exe = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name='{self.name}',
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    console={not self.noconsole},
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    {icon_param}
-)
+            print("\n" + "="*60)
+            print(f"✗ 打包失败！退出代码: {result.returncode}")
+            print("="*60)
+            return False
+            
+    except Exception as e:
+        print(f"\n[ERROR] 打包过程出错: {e}")
+        return False
 
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name='{self.name}',
-)
-'''
-        
-        spec_content = f'''# -*- mode: python ; coding: utf-8 -*-
-# Auto-generated by Universal Cloud Packager v6.4
 
-from PyInstaller.utils.hooks import collect_submodules
-
-block_cipher = None
-
-a = Analysis(
-    [r'{source_escaped}'],
-    pathex=[],
-    binaries=[],
-    datas=[
-{datas_str}
-    ],
-    hiddenimports=[
-{hidden_str}
-{collect_str}
-    ],
-    hookspath=[],
-    hooksconfig={{}},
-    runtime_hooks=[],
-    excludes=[
-{excludes_str}
-    ],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
-    noarchive=False,
-)
-
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
-{exe_section}
-'''
-        
-        spec_path = f"{self.name}.spec"
-        with open(spec_path, 'w', encoding='utf-8') as f:
-            f.write(spec_content)
-        
-        self._temp_files.append(spec_path)
-        self.log(f"Generated spec: {spec_path}")
-        return spec_path
+def check_dependencies():
+    """检查必要的依赖"""
+    try:
+        import PyInstaller
+        print(f"[INFO] PyInstaller 版本: {PyInstaller.__version__}")
+    except ImportError:
+        print("[ERROR] PyInstaller 未安装")
+        print("请运行: pip install pyinstaller")
+        sys.exit(1)
     
-    def run(self) -> int:
-        start = time.time()
-        
-        self.log("=" * 60)
-        self.log("Universal Cloud Packager v6.4")
-        self.log("=" * 60)
-        self.log(f"Source: {repr(self.source)}")
-        self.log(f"Output: {self.name}")
-        self.log(f"Mode: {self.mode}")
-        self.log(f"EXE Icon: {self.exe_icon or 'None'}")
-        self.log(f"Window Icon: {self.window_icon or 'None'}")
-        self.log(f"Taskbar Icon: {self.taskbar_icon or 'None'}")
-        self.log("=" * 60)
-        
-        if not os.path.exists(self.source):
-            self.log("Source not found!", "ERROR")
-            return 1
-        
-        try:
-            self.install_requirements()
-            
-            # 准备 EXE 图标（PNG 转 ICO）
-            ico_path = self.prepare_exe_icon()
-            
-            # 创建包装器（窗口/任务栏图标 Hook）
-            wrapper_source = self.source
-            if self.window_icon or self.taskbar_icon or (self.mode == 'onefile' and self.cleanup_temp):
-                wrapper_result = self.create_icon_wrapper()
-                if wrapper_result:
-                    wrapper_source = wrapper_result
-            
-            hidden, collect = self.prepare_dependencies()
-            data = self.collect_data_files()
-            self.log(f"Data files: {len(data)}")
-            
-            # 生成 spec 文件
-            spec_path = self.generate_spec_file(wrapper_source, hidden, collect, data, ico_path)
-            
-            # 打印 spec 文件内容用于调试
-            self.log("-" * 60)
-            self.log("Spec file content (icon section):")
-            with open(spec_path, 'r') as f:
-                content = f.read()
-                if 'icon=' in content:
-                    for line in content.split('\n'):
-                        if 'icon=' in line:
-                            self.log(f"  {line.strip()}")
-                else:
-                    self.log("  No icon parameter found!")
-            self.log("-" * 60)
-            
-            import subprocess
-            cmd = [self.python, '-m', 'PyInstaller', '--clean', '--noconfirm', spec_path]
-            
-            self.log("Running PyInstaller...")
-            self.log("-" * 60)
-            
-            env = os.environ.copy()
-            env['PYTHONIOENCODING'] = 'utf-8'
-            
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
-            
-            for line in proc.stdout:
-                try:
-                    safe_print(f"[PYI] {line.decode('utf-8', errors='replace').rstrip()}")
-                except:
-                    pass
-            
-            proc.wait()
-            elapsed = time.time() - start
-            
-            exe = Path('dist') / (f"{self.name}.exe" if self.mode == 'onefile' else f"{self.name}/{self.name}.exe")
-            
-            if exe.exists():
-                size = exe.stat().st_size / (1024 * 1024)
-                self.log("=" * 60)
-                self.log("SUCCESS!")
-                self.log(f"Output: {exe}")
-                self.log(f"Size: {size:.2f} MB")
-                self.log(f"Time: {elapsed:.1f}s")
-                self.log("=" * 60)
-                return 0
-            else:
-                self.log("FAILED - Output not found", "ERROR")
-                return 1
-        
-        except Exception as e:
-            self.log(f"Exception: {e}", "ERROR")
-            import traceback
-            traceback.print_exc()
-            return 1
-        
-        finally:
-            for f in self._temp_files:
-                try:
-                    if os.path.exists(f):
-                        os.remove(f)
-                except:
-                    pass
-    
-    def install_requirements(self):
-        import subprocess
-        for req in ['requirements.txt', 'requirements-build.txt']:
-            path = req if os.path.exists(req) else os.path.join(self.source_dir, req)
-            if os.path.exists(path):
-                self.log(f"Installing {req}...")
-                subprocess.run([self.python, '-m', 'pip', 'install', '-r', path, '-q'], capture_output=True)
+    try:
+        import yaml
+        print(f"[INFO] PyYAML 已安装")
+    except ImportError:
+        print("[ERROR] PyYAML 未安装")
+        print("请运行: pip install pyyaml")
+        sys.exit(1)
 
 
 def main():
-    import argparse
-    parser = argparse.ArgumentParser(description='Universal Cloud Packager v6.4')
-    parser.add_argument('--source', '-s', required=True)
-    parser.add_argument('--name', '-n', required=True)
-    parser.add_argument('--mode', '-m', choices=['onefile', 'onedir'], default='onefile')
-    parser.add_argument('--noconsole', '-w', action='store_true')
-    parser.add_argument('--exe-icon')
-    parser.add_argument('--window-icon')
-    parser.add_argument('--taskbar-icon')
-    parser.add_argument('--data', '-d', action='append', default=[])
-    parser.add_argument('--no-cleanup', action='store_true')
+    """主函数"""
+    print("\n" + "="*60)
+    print("云打包工具 v61 - 修复版")
+    print("支持自动检测 rembg 等特殊库")
+    print("="*60 + "\n")
     
-    args = parser.parse_args()
+    # 检查依赖
+    check_dependencies()
     
-    packager = UniversalCloudPackager(
-        source=args.source, name=args.name, mode=args.mode,
-        noconsole=args.noconsole, exe_icon=args.exe_icon,
-        window_icon=args.window_icon, taskbar_icon=args.taskbar_icon,
-        extra_data=args.data, cleanup_temp=not args.no_cleanup
-    )
-    sys.exit(packager.run())
+    # 加载配置
+    config = load_config('build-v61.yml')
+    
+    script_path = config.get('script')
+    if not script_path or not os.path.exists(script_path):
+        print(f"[ERROR] 脚本文件不存在: {script_path}")
+        sys.exit(1)
+    
+    print(f"[INFO] 目标脚本: {script_path}\n")
+    
+    # 检测特殊库
+    print("[INFO] 扫描脚本中的特殊库...")
+    detected_libs = detect_special_libraries(script_path)
+    
+    if detected_libs:
+        print(f"[INFO] 共检测到 {len(detected_libs)} 个特殊库")
+    else:
+        print("[INFO] 未检测到需要特殊处理的库")
+    
+    # 构建命令
+    cmd = build_pyinstaller_command(config, detected_libs)
+    
+    # 询问是否继续
+    print("\n" + "="*60)
+    response = input("是否继续打包? (y/n): ").strip().lower()
+    if response != 'y':
+        print("已取消打包")
+        sys.exit(0)
+    
+    # 清理旧文件（可选）
+    if config.get('clean_before_build', True):
+        clean_build_folders()
+    
+    # 执行打包
+    success = run_packaging(cmd)
+    
+    if success:
+        # 显示输出位置
+        dist_folder = Path('dist')
+        if dist_folder.exists():
+            files = list(dist_folder.glob('*'))
+            if files:
+                print(f"\n[INFO] 打包文件位置:")
+                for file in files:
+                    print(f"  └─ {file}")
+        
+        print("\n[提示] 请在没有Python环境的机器上测试EXE文件")
+        print("[提示] 如果仍有问题，请查看 build/*/warn-*.txt 文件")
+    else:
+        print("\n[提示] 打包失败，请检查:")
+        print("  1. 所有依赖是否已安装")
+        print("  2. 配置文件是否正确")
+        print("  3. 查看详细错误日志")
+    
+    sys.exit(0 if success else 1)
 
 
 if __name__ == '__main__':
